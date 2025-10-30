@@ -26,7 +26,7 @@ export function ProfilePage() {
             </div>
             <div>
               <h2 className="text-2xl font-bold">{user.name}</h2>
-              <p className="text-muted-foreground capitalize">{user.role}</p>
+              <p className="text-muted-foreground capitalize">{user.rbacLevel} access</p>
             </div>
           </div>
 
@@ -40,14 +40,43 @@ export function ProfilePage() {
               </div>
             </div>
 
-            {/* Role */}
+            {/* Access Level */}
             <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-lg">
               <Shield className="h-5 w-5 text-green-600" />
               <div>
-                <p className="text-sm text-muted-foreground">Account Role</p>
-                <p className="font-medium capitalize">{user.role}</p>
+                <p className="text-sm text-muted-foreground">Access Level</p>
+                <p className="font-medium capitalize">{user.rbacLevel}</p>
               </div>
             </div>
+
+            {/* Hierarchy */}
+            {user.stateId && (
+              <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-lg">
+                <Shield className="h-5 w-5 text-indigo-600" />
+                <div>
+                  <p className="text-sm text-muted-foreground">State Identifier</p>
+                  <p className="font-medium">{user.stateId}</p>
+                </div>
+              </div>
+            )}
+            {user.districtId && (
+              <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-lg">
+                <Shield className="h-5 w-5 text-blue-600" />
+                <div>
+                  <p className="text-sm text-muted-foreground">District Identifier</p>
+                  <p className="font-medium">{user.districtId}</p>
+                </div>
+              </div>
+            )}
+            {user.stationId && (
+              <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-lg">
+                <Shield className="h-5 w-5 text-cyan-600" />
+                <div>
+                  <p className="text-sm text-muted-foreground">Station Identifier</p>
+                  <p className="font-medium">{user.stationId}</p>
+                </div>
+              </div>
+            )}
 
             {/* User ID */}
             <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-lg">

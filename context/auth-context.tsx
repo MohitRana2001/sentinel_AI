@@ -1,89 +1,201 @@
-"use client"
+"use client";
 
-import type React from "react"
-import { createContext, useContext, useState } from "react"
-import type { User, AuthContextType, UserRole, Document } from "@/types"
+import type React from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined)
+import type { User, AuthContextType, Document } from "@/types";
 
-// Dummy credentials database
-const DUMMY_USERS: Record<string, { password: string; role: UserRole; name: string }> = {
-  "admin@test.com": { password: "password", role: "admin", name: "Admin User" },
-  "analyst@test.com": { password: "password", role: "analyst", name: "Analyst User" },
-  "manager@test.com": { password: "password", role: "manager", name: "Manager User" },
-  "super_admin@test.com": { password: "password", role: "super_admin", name: "Super Admin User" },
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+const TOKEN_STORAGE_KEY = "sentinel-auth-token";
+
+interface BackendUser {
+  id: number;
+  email: string;
+  username: string;
+  rbac_level: "station" | "district" | "state";
+  station_id?: string | null;
+  district_id?: string | null;
+  state_id?: string | null;
 }
 
-const DUMMY_DOCUMENTS: Document[] = [
-  {
-    id: "doc-001",
-    fileName: "quarterly-report.pdf",
-    uploadedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-    fileSize: 2.5,
-    status: "completed",
-  },
-  {
-    id: "doc-002",
-    fileName: "annual-summary.docx",
-    uploadedAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-    fileSize: 1.8,
-    status: "completed",
-  },
-  {
-    id: "doc-003",
-    fileName: "market-analysis.xlsx",
-    uploadedAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-    fileSize: 3.2,
-    status: "completed",
-  },
-  {
-    id: "doc-004",
-    fileName: "presentation.pptx",
-    uploadedAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
-    fileSize: 5.1,
-    status: "completed",
-  },
-]
+function mapBackendUser(payload: BackendUser): User {
+  return {
+    id: String(payload.id),
+    email: payload.email,
+    name: payload.username,
+    rbacLevel: payload.rbac_level,
+    stationId: payload.station_id ?? null,
+    districtId: payload.district_id ?? null,
+    stateId: payload.state_id ?? null,
+  };
+}
+
+async function request<T>(
+  input: RequestInfo,
+  init: RequestInit = {}
+): Promise<T> {
+  const response = await fetch(input, {
+    headers: {
+      "Content-Type": "application/json",
+      ...(init.headers ?? {}),
+    },
+    ...init,
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const errorMessage = data?.detail ?? "Request failed";
+    throw new Error(
+      typeof errorMessage === "string"
+        ? errorMessage
+        : JSON.stringify(errorMessage)
+    );
+  }
+  return data as T;
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
-  const [documents, setDocuments] = useState<Document[]>([])
+  const [user, setUser] = useState<User | null>(null);
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [token, setToken] = useState<string | null>(null);
 
-  const login = (email: string, password: string): boolean => {
-    const credentials = DUMMY_USERS[email]
-    if (credentials && credentials.password === password) {
-      setUser({
-        id: `user-${Date.now()}`,
-        email,
-        role: credentials.role,
-        name: credentials.name,
-      })
-      setDocuments(DUMMY_DOCUMENTS)
-      return true
+  const persistToken = useCallback((value: string | null) => {
+    setToken(value);
+    if (typeof window === "undefined") return;
+
+    if (value) {
+      window.localStorage.setItem(TOKEN_STORAGE_KEY, value);
+    } else {
+      window.localStorage.removeItem(TOKEN_STORAGE_KEY);
     }
-    return false
-  }
+  }, []);
 
-  const logout = () => {
-    setUser(null)
-    setDocuments([])
-  }
+  const fetchProfile = useCallback(async (accessToken: string) => {
+    const profile = await request<BackendUser>(`${API_BASE_URL}/auth/me`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    setUser(mapBackendUser(profile));
+  }, []);
 
-  const addDocument = (document: Document) => {
-    setDocuments((prev) => [document, ...prev])
-  }
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const storedToken = window.localStorage.getItem(TOKEN_STORAGE_KEY);
+    if (!storedToken) return;
+
+    persistToken(storedToken);
+    fetchProfile(storedToken).catch(() => {
+      persistToken(null);
+      setUser(null);
+    });
+  }, [fetchProfile, persistToken]);
+
+  const login = useCallback(
+    async (email: string, password: string) => {
+      const result = await request<{ access_token: string }>(
+        `${API_BASE_URL}/auth/login`,
+        {
+          method: "POST",
+          body: JSON.stringify({ email, password }),
+        }
+      );
+      persistToken(result.access_token);
+      await fetchProfile(result.access_token);
+      setDocuments([]); // Clear cached documents; fetch when dashboard loads
+    },
+    [fetchProfile, persistToken]
+  );
+
+  const signup = useCallback(
+    async (data: {
+      email: string;
+      username: string;
+      password: string;
+      rbacLevel: "station" | "district" | "state";
+      stationId?: string;
+      districtId?: string;
+      stateId?: string;
+    }) => {
+      await request(`${API_BASE_URL}/auth/signup`, {
+        method: "POST",
+        body: JSON.stringify({
+          email: data.email,
+          username: data.username,
+          password: data.password,
+          rbac_level: data.rbacLevel,
+          station_id: data.stationId,
+          district_id: data.districtId,
+          state_id: data.stateId,
+        }),
+      });
+      await login(data.email, data.password);
+    },
+    [login]
+  );
+
+  const logout = useCallback(async () => {
+    if (!token) {
+      setUser(null);
+      setDocuments([]);
+      persistToken(null);
+      return;
+    }
+
+    try {
+      await request(`${API_BASE_URL}/auth/logout`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+    } catch (error) {
+      // Ignore logout errors to avoid trapping the user
+      console.warn("Logout failed:", error);
+    } finally {
+      setUser(null);
+      setDocuments([]);
+      persistToken(null);
+    }
+  }, [persistToken, token]);
+
+  const addDocument = useCallback((document: Document) => {
+    setDocuments((prev) => [document, ...prev]);
+  }, []);
+
+  const contextValue = useMemo<AuthContextType>(
+    () => ({
+      user,
+      isAuthenticated: !!user,
+      login,
+      signup,
+      logout,
+      documents,
+      addDocument,
+    }),
+    [addDocument, documents, login, logout, signup, user]
+  );
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, logout, documents, addDocument }}>
-      {children}
-    </AuthContext.Provider>
-  )
+    <AuthContext.Provider value={contextValue}>{children}</AuthContext.Provider>
+  );
 }
 
 export function useAuth() {
-  const context = useContext(AuthContext)
+  const context = useContext(AuthContext);
   if (!context) {
-    throw new Error("useAuth must be used within AuthProvider")
+    throw new Error("useAuth must be used within AuthProvider");
   }
-  return context
+  return context;
 }

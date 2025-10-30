@@ -1,0 +1,271 @@
+version: "3.8"
+
+# Production Docker Compose Configuration
+# This assumes external services: AlloyDB, GCS, Redis (managed), Neo4j (managed)
+# Only runs application services
+
+services:
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-backend-prod
+    environment:
+      # Production Mode
+      ENV: production
+      DEBUG: "False"
+      USE_GEMINI_FOR_DEV: "false"
+      USE_SQLITE_FOR_DEV: "false"
+      
+      # API Configuration
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      FRONTEND_URL: ${FRONTEND_URL:-https://your-domain.com}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://your-domain.com}
+      
+      # AlloyDB Configuration (REQUIRED)
+      ALLOYDB_HOST: ${ALLOYDB_HOST}
+      ALLOYDB_PORT: ${ALLOYDB_PORT:-5432}
+      ALLOYDB_USER: ${ALLOYDB_USER:-postgres}
+      ALLOYDB_PASSWORD: ${ALLOYDB_PASSWORD}
+      ALLOYDB_DATABASE: ${ALLOYDB_DATABASE:-sentinel_db}
+      
+      # Redis Configuration (REQUIRED)
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_DB: ${REDIS_DB:-0}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      
+      # Neo4j Configuration (REQUIRED)
+      NEO4J_URI: ${NEO4J_URI}
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      
+      # GCS Configuration (REQUIRED)
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME}
+      GCS_PROJECT_ID: ${GCS_PROJECT_ID}
+      GCS_CREDENTIALS_PATH: /app/credentials/gcs-key.json
+      
+      # Ollama/Gemma Models (REQUIRED)
+      SUMMARY_LLM_HOST: ${SUMMARY_LLM_HOST}
+      SUMMARY_LLM_PORT: ${SUMMARY_LLM_PORT:-11434}
+      SUMMARY_LLM_MODEL: ${SUMMARY_LLM_MODEL:-gemma3:1b}
+      
+      GRAPH_LLM_HOST: ${GRAPH_LLM_HOST}
+      GRAPH_LLM_PORT: ${GRAPH_LLM_PORT:-11435}
+      GRAPH_LLM_MODEL: ${GRAPH_LLM_MODEL:-gemma3:4b}
+      
+      CHAT_LLM_HOST: ${CHAT_LLM_HOST}
+      CHAT_LLM_PORT: ${CHAT_LLM_PORT:-11436}
+      CHAT_LLM_MODEL: ${CHAT_LLM_MODEL:-gemma3:1b}
+      
+      MULTIMODAL_LLM_HOST: ${MULTIMODAL_LLM_HOST}
+      MULTIMODAL_LLM_PORT: ${MULTIMODAL_LLM_PORT:-11437}
+      MULTIMODAL_LLM_MODEL: ${MULTIMODAL_LLM_MODEL:-gemma3:12b}
+      
+      EMBEDDING_LLM_HOST: ${EMBEDDING_LLM_HOST}
+      EMBEDDING_LLM_PORT: ${EMBEDDING_LLM_PORT:-11434}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embeddinggemma:latest}
+      
+      # Upload Limits
+      MAX_UPLOAD_FILES: ${MAX_UPLOAD_FILES:-50}
+      MAX_FILE_SIZE_MB: ${MAX_FILE_SIZE_MB:-100}
+      ALLOWED_EXTENSIONS: ${ALLOWED_EXTENSIONS:-.pdf,.docx,.txt,.mp3,.wav,.mp4,.avi,.mov}
+      
+      # Security (REQUIRED)
+      SECRET_KEY: ${SECRET_KEY}
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      
+      # Translation
+      TRANSLATION_THRESHOLD_MB: ${TRANSLATION_THRESHOLD_MB:-10}
+      TRANSLATION_LOCAL: "True"
+      
+      # Text Processing
+      CHUNK_SIZE: ${CHUNK_SIZE:-2000}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP:-100}
+      
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      # Mount GCS credentials (REQUIRED)
+      - ${GCS_CREDENTIALS_PATH:-./credentials/gcs-key.json}:/app/credentials/gcs-key.json:ro
+      # Optional: Mount logs
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - sentinel-network
+
+  # Document Processor Service
+  document-processor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-document-processor-prod
+    environment:
+      ENV: production
+      DEBUG: "False"
+      USE_GEMINI_FOR_DEV: "false"
+      USE_SQLITE_FOR_DEV: "false"
+      
+      # Database
+      ALLOYDB_HOST: ${ALLOYDB_HOST}
+      ALLOYDB_PORT: ${ALLOYDB_PORT:-5432}
+      ALLOYDB_USER: ${ALLOYDB_USER:-postgres}
+      ALLOYDB_PASSWORD: ${ALLOYDB_PASSWORD}
+      ALLOYDB_DATABASE: ${ALLOYDB_DATABASE:-sentinel_db}
+      
+      # Redis
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      
+      # GCS
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME}
+      GCS_PROJECT_ID: ${GCS_PROJECT_ID}
+      GCS_CREDENTIALS_PATH: /app/credentials/gcs-key.json
+      
+      # Ollama
+      SUMMARY_LLM_HOST: ${SUMMARY_LLM_HOST}
+      SUMMARY_LLM_PORT: ${SUMMARY_LLM_PORT:-11434}
+      SUMMARY_LLM_MODEL: ${SUMMARY_LLM_MODEL:-gemma3:1b}
+      
+      EMBEDDING_LLM_HOST: ${EMBEDDING_LLM_HOST}
+      EMBEDDING_LLM_PORT: ${EMBEDDING_LLM_PORT:-11434}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embeddinggemma:latest}
+      
+    volumes:
+      - ${GCS_CREDENTIALS_PATH:-./credentials/gcs-key.json}:/app/credentials/gcs-key.json:ro
+      - ./logs:/app/logs
+    restart: unless-stopped
+    command: python processors/document_processor_service.py
+    depends_on:
+      - backend
+    networks:
+      - sentinel-network
+
+  # Audio/Video Processor Service
+  audio-video-processor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-audio-processor-prod
+    environment:
+      ENV: production
+      DEBUG: "False"
+      USE_GEMINI_FOR_DEV: "false"
+      USE_SQLITE_FOR_DEV: "false"
+      
+      ALLOYDB_HOST: ${ALLOYDB_HOST}
+      ALLOYDB_PORT: ${ALLOYDB_PORT:-5432}
+      ALLOYDB_USER: ${ALLOYDB_USER:-postgres}
+      ALLOYDB_PASSWORD: ${ALLOYDB_PASSWORD}
+      ALLOYDB_DATABASE: ${ALLOYDB_DATABASE:-sentinel_db}
+      
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME}
+      GCS_PROJECT_ID: ${GCS_PROJECT_ID}
+      GCS_CREDENTIALS_PATH: /app/credentials/gcs-key.json
+      
+      MULTIMODAL_LLM_HOST: ${MULTIMODAL_LLM_HOST}
+      MULTIMODAL_LLM_PORT: ${MULTIMODAL_LLM_PORT:-11437}
+      MULTIMODAL_LLM_MODEL: ${MULTIMODAL_LLM_MODEL:-gemma3:12b}
+      
+      SUMMARY_LLM_HOST: ${SUMMARY_LLM_HOST}
+      SUMMARY_LLM_PORT: ${SUMMARY_LLM_PORT:-11434}
+      
+    volumes:
+      - ${GCS_CREDENTIALS_PATH:-./credentials/gcs-key.json}:/app/credentials/gcs-key.json:ro
+      - ./logs:/app/logs
+    restart: unless-stopped
+    command: python processors/audio_video_processor_service.py
+    depends_on:
+      - backend
+    networks:
+      - sentinel-network
+
+  # Graph Processor Service
+  graph-processor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-graph-processor-prod
+    environment:
+      ENV: production
+      DEBUG: "False"
+      USE_GEMINI_FOR_DEV: "false"
+      USE_SQLITE_FOR_DEV: "false"
+      
+      ALLOYDB_HOST: ${ALLOYDB_HOST}
+      ALLOYDB_PORT: ${ALLOYDB_PORT:-5432}
+      ALLOYDB_USER: ${ALLOYDB_USER:-postgres}
+      ALLOYDB_PASSWORD: ${ALLOYDB_PASSWORD}
+      ALLOYDB_DATABASE: ${ALLOYDB_DATABASE:-sentinel_db}
+      
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      
+      NEO4J_URI: ${NEO4J_URI}
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME}
+      GCS_PROJECT_ID: ${GCS_PROJECT_ID}
+      GCS_CREDENTIALS_PATH: /app/credentials/gcs-key.json
+      
+      GRAPH_LLM_HOST: ${GRAPH_LLM_HOST}
+      GRAPH_LLM_PORT: ${GRAPH_LLM_PORT:-11435}
+      GRAPH_LLM_MODEL: ${GRAPH_LLM_MODEL:-gemma3:4b}
+      
+    volumes:
+      - ${GCS_CREDENTIALS_PATH:-./credentials/gcs-key.json}:/app/credentials/gcs-key.json:ro
+      - ./logs:/app/logs
+    restart: unless-stopped
+    command: python processors/graph_processor_service.py
+    depends_on:
+      - backend
+    networks:
+      - sentinel-network
+
+  # Frontend (Next.js) - Production Build
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    container_name: sentinel-frontend-prod
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+      NEXT_PUBLIC_MAX_UPLOAD_FILES: ${MAX_UPLOAD_FILES:-50}
+      NEXT_PUBLIC_MAX_FILE_SIZE_MB: ${MAX_FILE_SIZE_MB:-100}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - sentinel-network
+
+networks:
+  sentinel-network:
+    driver: bridge
+    name: sentinel-network-prod
+
+# NOTE: No volumes defined as all data is stored in:
+# - AlloyDB (database)
+# - GCS (file storage)
+# - External Redis (cache/queue)
+# - External Neo4j (graph database)
+

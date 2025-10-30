@@ -1,109 +1,199 @@
-"use client"
+"use client";
 
-import { useState, useRef, useEffect } from "react"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Card } from "@/components/ui/card"
-import type { ChatMessage } from "@/types"
-import { Send } from "lucide-react"
+import { useEffect, useRef, useState } from "react";
+import { Send } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card } from "@/components/ui/card";
+import { apiClient } from "@/lib/api-client";
+import type { ChatMessage, ChatSource } from "@/types";
 
 interface ChatTabProps {
-  fileName: string
+  jobId: string;
+  documents: { id: number; fileName: string }[];
 }
 
-export function ChatTab({ fileName }: ChatTabProps) {
+const formatTime = (isoString: string) =>
+  new Date(isoString).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+export function ChatTab({ jobId, documents }: ChatTabProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
-      id: "1",
+      id: "intro",
       sender: "ai",
-      content: `I've analyzed "${fileName}" for you. Feel free to ask me any questions about the document's content, summary, or any specific details you'd like to know more about.`,
+      content: `Hello! I'm your Sentinel AI assistant, powered by Google Gemini. I'm ready to answer questions about your uploaded documents. Feel free to ask about summaries, translations, specific details, or relationships between documents.`,
       timestamp: new Date().toISOString(),
+      mode: "gemini-2.0-flash",
     },
-  ])
-  const [inputValue, setInputValue] = useState("")
-  const [isLoading, setIsLoading] = useState(false)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }
+  ]);
+  const [inputValue, setInputValue] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    scrollToBottom()
-  }, [messages])
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   const handleSendMessage = async () => {
-    if (!inputValue.trim()) return
+    if (!inputValue.trim()) {
+      return;
+    }
 
-    // Add user message
+    const content = inputValue.trim();
     const userMessage: ChatMessage = {
-      id: `msg-${Date.now()}`,
+      id: `user-${Date.now()}`,
       sender: "user",
-      content: inputValue,
+      content,
       timestamp: new Date().toISOString(),
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
+    setInputValue("");
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await apiClient.chat(content, jobId, undefined);
+
+      // Log response for debugging
+      console.log("Chat response received:", {
+        mode: response.mode,
+        sourcesCount: response.sources?.length || 0,
+        responseLength: response.response?.length || 0,
+      });
+
+      const aiMessage: ChatMessage = {
+        id: `ai-${Date.now()}`,
+        sender: "ai",
+        content: response.response,
+        timestamp: new Date().toISOString(),
+        mode: response.mode,
+        sources: response.sources as ChatSource[],
+      };
+      setMessages((prev) => [...prev, aiMessage]);
+    } catch (err) {
+      console.error("Chat error:", err);
+
+      const errorMessage =
+        err instanceof Error ? err.message : "Unknown error occurred";
+      const fallback: ChatMessage = {
+        id: `error-${Date.now()}`,
+        sender: "ai",
+        content: `I encountered an error while processing your request: ${errorMessage}\n\nPlease check:\n- The backend server is running\n- GEMINI_API_KEY is configured\n- Your documents are properly processed`,
+        timestamp: new Date().toISOString(),
+        error: true,
+      };
+      setMessages((prev) => [...prev, fallback]);
+      setError(errorMessage);
+    } finally {
+      setIsLoading(false);
     }
+  };
 
-    setMessages((prev) => [...prev, userMessage])
-    setInputValue("")
-    setIsLoading(true)
+  const renderSources = (sources?: ChatSource[]) => {
+    if (!sources || sources.length === 0) return null;
 
-    // Simulate AI response delay
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-
-    const aiResponses = [
-      "Based on the document, I can confirm that this information is relevant to your query.",
-      "That's an excellent question. The document discusses this topic in detail.",
-      "I found relevant information about that in the document. Would you like me to elaborate?",
-      "This is covered in the analysis. The key points are clearly outlined.",
-      "Great question! The document provides comprehensive information on this subject.",
-    ]
-
-    const aiMessage: ChatMessage = {
-      id: `msg-${Date.now() + 1}`,
-      sender: "ai",
-      content: aiResponses[Math.floor(Math.random() * aiResponses.length)],
-      timestamp: new Date().toISOString(),
-    }
-
-    setMessages((prev) => [...prev, aiMessage])
-    setIsLoading(false)
-  }
+    return (
+      <div className="mt-3 rounded-lg bg-white/80 border border-blue-200 p-3 text-xs text-slate-600 space-y-2">
+        <p className="font-semibold text-blue-700 uppercase tracking-wide text-[11px] flex items-center gap-1">
+          <svg
+            className="w-3 h-3"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+            />
+          </svg>
+          Source Excerpts ({sources.length})
+        </p>
+        <ul className="space-y-2.5">
+          {sources.map((source, index) => (
+            <li
+              key={`${source.document_id}-${source.chunk_index}-${index}`}
+              className="leading-relaxed pl-1"
+            >
+              <div className="flex items-start gap-2">
+                <span className="font-medium text-blue-600 text-sm mt-0.5">
+                  •
+                </span>
+                <div className="flex-1">
+                  <span className="font-semibold text-slate-800 text-[11px]">
+                    Doc {source.document_id}, Chunk {source.chunk_index + 1}
+                  </span>
+                  <p className="text-slate-600 mt-0.5 leading-relaxed">
+                    {source.chunk_text.substring(0, 250)}
+                    {source.chunk_text.length > 250 ? "…" : ""}
+                  </p>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  };
 
   return (
     <div className="flex flex-col h-full">
-      {/* Messages Container */}
-      <div className="flex-1 overflow-y-auto space-y-4 p-4 bg-muted/30 rounded-lg mb-4">
+      <div className="flex-1 overflow-y-auto space-y-4 p-4 bg-gradient-to-br from-blue-50/80 via-sky-50/60 to-blue-100/60 rounded-xl border border-blue-100 shadow-inner mb-4">
         {messages.map((message) => (
-          <div key={message.id} className={`flex ${message.sender === "user" ? "justify-end" : "justify-start"}`}>
+          <div
+            key={message.id}
+            className={`flex ${
+              message.sender === "user" ? "justify-end" : "justify-start"
+            }`}
+          >
             <Card
-              className={`max-w-xs lg:max-w-md px-4 py-2 ${
-                message.sender === "user" ? "bg-primary text-primary-foreground" : "bg-card border-muted"
+              className={`max-w-xs lg:max-w-xl px-4 py-3 shadow-md ${
+                message.sender === "user"
+                  ? "bg-blue-600 text-white"
+                  : message.error
+                  ? "bg-white border border-red-200 text-red-700"
+                  : "bg-blue-100/90 border border-blue-200 text-slate-800"
               }`}
             >
-              <p className="text-sm">{message.content}</p>
+              <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                {message.content}
+              </p>
+              {message.sources && renderSources(message.sources)}
               <p
-                className={`text-xs mt-1 ${
-                  message.sender === "user" ? "text-primary-foreground/70" : "text-muted-foreground"
+                className={`text-[11px] mt-2 uppercase tracking-wide ${
+                  message.sender === "user"
+                    ? "text-blue-50/70"
+                    : "text-blue-700/80"
                 }`}
               >
-                {new Date(message.timestamp).toLocaleTimeString()}
+                {formatTime(message.timestamp)}
+                {message.mode && !message.error && message.mode !== "system"
+                  ? ` • ${message.mode}`
+                  : ""}
               </p>
             </Card>
           </div>
         ))}
         {isLoading && (
           <div className="flex justify-start">
-            <Card className="bg-card border-muted px-4 py-2">
-              <div className="flex gap-1">
-                <div className="w-2 h-2 rounded-full bg-muted-foreground animate-bounce" />
+            <Card className="bg-blue-100/70 border border-blue-200 px-4 py-2">
+              <div className="flex items-center gap-2 text-blue-700">
+                <div className="w-2 h-2 rounded-full bg-blue-500 animate-bounce" />
                 <div
-                  className="w-2 h-2 rounded-full bg-muted-foreground animate-bounce"
+                  className="w-2 h-2 rounded-full bg-blue-500 animate-bounce"
                   style={{ animationDelay: "0.2s" }}
                 />
                 <div
-                  className="w-2 h-2 rounded-full bg-muted-foreground animate-bounce"
+                  className="w-2 h-2 rounded-full bg-blue-500 animate-bounce"
                   style={{ animationDelay: "0.4s" }}
                 />
+                <span className="text-xs font-medium">Thinking…</span>
               </div>
             </Card>
           </div>
@@ -111,19 +201,30 @@ export function ChatTab({ fileName }: ChatTabProps) {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
-      <div className="flex gap-2">
+      {error && (
+        <div className="mb-3 text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+          {error}
+        </div>
+      )}
+
+      <div className="flex gap-2 items-center bg-blue-50/70 border border-blue-100 rounded-xl px-3 py-2 shadow-sm">
         <Input
-          placeholder="Ask a question about the document..."
+          placeholder="Ask a question about the document…"
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
-          onKeyPress={(e) => e.key === "Enter" && handleSendMessage()}
+          onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
           disabled={isLoading}
+          className="border-0 bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 text-slate-700"
         />
-        <Button onClick={handleSendMessage} disabled={isLoading || !inputValue.trim()} size="icon">
+        <Button
+          onClick={handleSendMessage}
+          disabled={isLoading || !inputValue.trim()}
+          size="icon"
+          className="bg-blue-600 hover:bg-blue-700 text-white shadow-md"
+        >
           <Send className="h-4 w-4" />
         </Button>
       </div>
     </div>
-  )
+  );
 }

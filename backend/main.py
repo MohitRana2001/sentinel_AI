@@ -31,38 +31,84 @@ from rbac import (
     user_has_job_access,
 )
 
-# --- START: NEW PYDANTIC MODELS FOR USER CREATION ---
-class AssignableRole(str, enum.Enum):
-    MANAGER = "manager"
-    ANALYST = "analyst"
-
-class UserCreate(BaseModel):
-    """Data model for Admin to create a new user."""
-    username: EmailStr
+# --- START: PYDANTIC MODELS FOR USER MANAGEMENT ---
+class ManagerCreate(BaseModel):
+    """Data model for Admin to create a Manager."""
+    email: EmailStr
+    username: str
     password: str
-    role: AssignableRole
 
 class AnalystCreate(BaseModel):
-    """Data model for Manager to create an Analyst."""
-    username: EmailStr
+    """Data model for Admin/Manager to create an Analyst."""
+    email: EmailStr
+    username: str
+    password: str
+    manager_id: int
+
+class AnalystCreateByManager(BaseModel):
+    """Data model for Manager to create an Analyst (manager_id is implicit)."""
+    email: EmailStr
+    username: str
     password: str
 
 class AdminSignUp(BaseModel):
     """Data model for the first admin sign-up."""
-    username: EmailStr
+    email: EmailStr
+    username: str
     password: str
-    secret_key: str  # The special key from your settings
+    secret_key: str
 
 class UserOut(BaseModel):
     """Data model for returning user info (safely, without password)."""
     id: int
-    username: EmailStr
-    role: RBACLevel
+    email: str
+    username: str
+    rbac_level: RBACLevel
+    manager_id: Optional[int] = None
+    created_by: Optional[int] = None
     created_at: datetime
 
     class Config:
-        orm_mode = True
-# --- END: NEW PYDANTIC MODELS ---
+        from_attributes = True
+
+class AnalystWithManager(BaseModel):
+    """Analyst with manager information."""
+    id: int
+    email: str
+    username: str
+    manager_id: Optional[int]
+    manager_email: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ManagerWithAnalysts(BaseModel):
+    """Manager with their analysts."""
+    id: int
+    email: str
+    username: str
+    created_at: datetime
+    analysts: List[UserOut] = []
+
+    class Config:
+        from_attributes = True
+
+class ReassignAnalyst(BaseModel):
+    """Data model to reassign analyst to a different manager."""
+    new_manager_id: int
+
+class JobWithAnalyst(BaseModel):
+    """Job with analyst information for manager view."""
+    job_id: str
+    analyst_email: str
+    analyst_username: str
+    status: str
+    total_files: int
+    processed_files: int
+    created_at: datetime
+    progress_percentage: float
+# --- END: PYDANTIC MODELS ---
 
 
 app = FastAPI(
@@ -88,17 +134,17 @@ app.include_router(auth_router)
 if Neo4jGraph:
     try:
         graph = Neo4jGraph(
-            url = settings.Neo4j_URI,
-            username = settings.Neo4j_USERNAME,
-            password = settings.Neo4j_PASSWORD,
-            database = settings.NEo4j_DATABASE
+            url = settings.NEO4J_URI,
+            username = settings.NEO4J_USERNAME,
+            password = settings.NEO4J_PASSWORD,
+            database = settings.NEO4J_DATABASE
         )
     except Exception as e:
         print(f"❌ Failed to connect to Neo4j in main.py: {e}")
         graph = None
-    else:
-        print("⚠️ Neo4j is not installed, graph API will not function.")
-        graph = None
+else:
+    print("⚠️ Neo4j is not installed, graph API will not function.")
+    graph = None
 
 # --- START: NEW SECURITY DEPENDENCIES FOR ADMIN & MANAGER ---
 def get_super_admin(current_user: models.User = Depends(get_current_user)):
@@ -165,58 +211,41 @@ async def get_config():
     }
 
 
-# --- START: NEW ENDPOINTS FOR USER SIGNUP & CREATION ---
+# --- START: USER MANAGEMENT ENDPOINTS ---
 
-@app.post(f"{settings.API_PREFIX}/signup/admin", response_model=UserOut)
-async def signup_admin_user(
+@app.post(f"{settings.API_PREFIX}/admin/signup", response_model=UserOut)
+async def signup_admin(
     user_in: AdminSignUp,
     db: Session = Depends(get_db)
 ):
     """
-    Create the first Super Admin user.
-    This requires a secret key from the server settings.
+    Create the first Admin user. Requires a secret key from server settings.
+    This is a one-time operation.
     """
-    
-    # 1. CRITICAL: Check the secret key
     if user_in.secret_key != settings.ADMIN_SIGNUP_SECRET:
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid secret key. Not authorized."
-        )
+        raise HTTPException(status_code=403, detail="Invalid secret key")
 
-    # 2. Check if an admin already exists (makes it one-time use)
     admin_exists = db.query(models.User).filter(
         models.User.rbac_level == models.RBACLevel.ADMIN
     ).first()
     
     if admin_exists:
-        raise HTTPException(
-            status_code=400,
-            detail="An admin account already exists."
-        )
+        raise HTTPException(status_code=400, detail="An admin account already exists")
         
-    # 3. Check if this specific username is taken
     existing_user = db.query(models.User).filter(
-        models.User.username == user_in.username
+        models.User.email == user_in.email
     ).first()
     
     if existing_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Username (email) already registered."
-        )
+        raise HTTPException(status_code=400, detail="Email already registered")
 
-    # 4. Hash the password
-    hashed_password = get_password_hash(user_in.password)
-    
-    # 5. Create the new admin user
     new_admin = models.User(
+        email=user_in.email,
         username=user_in.username,
-        hashed_password=hashed_password,
-        rbac_level=models.RBACLevel.ADMIN # Hardcode the role to ADMIN
+        hashed_password=get_password_hash(user_in.password),
+        rbac_level=models.RBACLevel.ADMIN
     )
     
-    # 6. Save to database
     db.add(new_admin)
     db.commit()
     db.refresh(new_admin)
@@ -224,74 +253,332 @@ async def signup_admin_user(
     return new_admin
 
 
-@app.post(f"{settings.API_PREFIX}/admin/create-user", response_model=UserOut)
-async def admin_create_user(
-    user_in: UserCreate,
+@app.post(f"{settings.API_PREFIX}/admin/managers", response_model=UserOut)
+async def admin_create_manager(
+    user_in: ManagerCreate,
     db: Session = Depends(get_db),
-    admin_user: models.User = Depends(get_super_admin) # Locks endpoint
+    admin_user: models.User = Depends(get_super_admin)
 ):
-    """
-    Super Admin endpoint to create a new Manager or Analyst.
-    """
+    """Admin endpoint to create a new Manager."""
     existing_user = db.query(models.User).filter(
-        models.User.username == user_in.username
+        models.User.email == user_in.email
     ).first()
     
     if existing_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Username (email) already registered."
-        )
+        raise HTTPException(status_code=400, detail="Email already registered")
         
-    hashed_password = get_password_hash(user_in.password)
-    
-    new_user = models.User(
+    new_manager = models.User(
+        email=user_in.email,
         username=user_in.username,
-        hashed_password=hashed_password,
-        rbac_level=user_in.role
+        hashed_password=get_password_hash(user_in.password),
+        rbac_level=models.RBACLevel.MANAGER,
+        created_by=admin_user.id
     )
     
-    db.add(new_user)
+    db.add(new_manager)
     db.commit()
-    db.refresh(new_user)
+    db.refresh(new_manager)
     
-    return new_user
+    return new_manager
 
 
-@app.post(f"{settings.API_PREFIX}/manager/create-analyst", response_model=UserOut)
-async def manager_create_analyst(
+@app.get(f"{settings.API_PREFIX}/admin/managers", response_model=List[ManagerWithAnalysts])
+async def admin_list_managers(
+    db: Session = Depends(get_db),
+    admin_user: models.User = Depends(get_super_admin)
+):
+    """Admin endpoint to list all managers with their analysts."""
+    managers = db.query(models.User).filter(
+        models.User.rbac_level == models.RBACLevel.MANAGER
+    ).all()
+    
+    result = []
+    for manager in managers:
+        manager_data = ManagerWithAnalysts(
+            id=manager.id,
+            email=manager.email,
+            username=manager.username,
+            created_at=manager.created_at,
+            analysts=[UserOut.from_orm(a) for a in manager.analysts]
+        )
+        result.append(manager_data)
+    
+    return result
+
+
+@app.delete(f"{settings.API_PREFIX}/admin/managers/{{manager_id}}")
+async def admin_delete_manager(
+    manager_id: int,
+    db: Session = Depends(get_db),
+    admin_user: models.User = Depends(get_super_admin)
+):
+    """Admin endpoint to delete a manager."""
+    manager = db.query(models.User).filter(
+        models.User.id == manager_id,
+        models.User.rbac_level == models.RBACLevel.MANAGER
+    ).first()
+    
+    if not manager:
+        raise HTTPException(status_code=404, detail="Manager not found")
+    
+    # Check if manager has analysts
+    if manager.analysts:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete manager with {len(manager.analysts)} analyst(s). Reassign or delete analysts first."
+        )
+    
+    db.delete(manager)
+    db.commit()
+    
+    return {"message": f"Manager {manager.email} deleted successfully"}
+
+
+@app.post(f"{settings.API_PREFIX}/admin/analysts", response_model=UserOut)
+async def admin_create_analyst(
     user_in: AnalystCreate,
     db: Session = Depends(get_db),
-    manager_user: models.User = Depends(get_manager) # Locks endpoint
+    admin_user: models.User = Depends(get_super_admin)
 ):
-    """
-    Manager-only endpoint to create a new Analyst.
-    """
+    """Admin endpoint to create a new Analyst and assign to a manager."""
     existing_user = db.query(models.User).filter(
-        models.User.username == user_in.username
+        models.User.email == user_in.email
     ).first()
     
     if existing_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Username (email) already registered."
-        )
-        
-    hashed_password = get_password_hash(user_in.password)
+        raise HTTPException(status_code=400, detail="Email already registered")
     
-    new_user = models.User(
+    # Verify manager exists
+    manager = db.query(models.User).filter(
+        models.User.id == user_in.manager_id,
+        models.User.rbac_level == models.RBACLevel.MANAGER
+    ).first()
+    
+    if not manager:
+        raise HTTPException(status_code=404, detail="Manager not found")
+        
+    new_analyst = models.User(
+        email=user_in.email,
         username=user_in.username,
-        hashed_password=hashed_password,
-        rbac_level=models.RBACLevel.ANALYST # Role is hardcoded
+        hashed_password=get_password_hash(user_in.password),
+        rbac_level=models.RBACLevel.ANALYST,
+        manager_id=user_in.manager_id,
+        created_by=admin_user.id
     )
     
-    db.add(new_user)
+    db.add(new_analyst)
     db.commit()
-    db.refresh(new_user)
+    db.refresh(new_analyst)
     
-    return new_user
+    return new_analyst
 
-# --- END: NEW ENDPOINTS FOR USER SIGNUP & CREATION ---
+
+@app.get(f"{settings.API_PREFIX}/admin/analysts", response_model=List[AnalystWithManager])
+async def admin_list_analysts(
+    db: Session = Depends(get_db),
+    admin_user: models.User = Depends(get_super_admin)
+):
+    """Admin endpoint to list all analysts with their manager info."""
+    analysts = db.query(models.User).filter(
+        models.User.rbac_level == models.RBACLevel.ANALYST
+    ).all()
+    
+    result = []
+    for analyst in analysts:
+        manager_email = None
+        if analyst.manager_id:
+            manager = db.query(models.User).filter(models.User.id == analyst.manager_id).first()
+            if manager:
+                manager_email = manager.email
+        
+        result.append(AnalystWithManager(
+            id=analyst.id,
+            email=analyst.email,
+            username=analyst.username,
+            manager_id=analyst.manager_id,
+            manager_email=manager_email,
+            created_at=analyst.created_at
+        ))
+    
+    return result
+
+
+@app.put(f"{settings.API_PREFIX}/admin/analysts/{{analyst_id}}/manager", response_model=UserOut)
+async def admin_reassign_analyst(
+    analyst_id: int,
+    reassign_data: ReassignAnalyst,
+    db: Session = Depends(get_db),
+    admin_user: models.User = Depends(get_super_admin)
+):
+    """Admin endpoint to reassign an analyst to a different manager."""
+    analyst = db.query(models.User).filter(
+        models.User.id == analyst_id,
+        models.User.rbac_level == models.RBACLevel.ANALYST
+    ).first()
+    
+    if not analyst:
+        raise HTTPException(status_code=404, detail="Analyst not found")
+    
+    new_manager = db.query(models.User).filter(
+        models.User.id == reassign_data.new_manager_id,
+        models.User.rbac_level == models.RBACLevel.MANAGER
+    ).first()
+    
+    if not new_manager:
+        raise HTTPException(status_code=404, detail="New manager not found")
+    
+    analyst.manager_id = reassign_data.new_manager_id
+    db.commit()
+    db.refresh(analyst)
+    
+    return analyst
+
+
+@app.delete(f"{settings.API_PREFIX}/admin/analysts/{{analyst_id}}")
+async def admin_delete_analyst(
+    analyst_id: int,
+    db: Session = Depends(get_db),
+    admin_user: models.User = Depends(get_super_admin)
+):
+    """Admin endpoint to delete an analyst."""
+    analyst = db.query(models.User).filter(
+        models.User.id == analyst_id,
+        models.User.rbac_level == models.RBACLevel.ANALYST
+    ).first()
+    
+    if not analyst:
+        raise HTTPException(status_code=404, detail="Analyst not found")
+    
+    db.delete(analyst)
+    db.commit()
+    
+    return {"message": f"Analyst {analyst.email} deleted successfully"}
+
+
+@app.post(f"{settings.API_PREFIX}/manager/analysts", response_model=UserOut)
+async def manager_create_analyst(
+    user_in: AnalystCreateByManager,
+    db: Session = Depends(get_db),
+    manager_user: models.User = Depends(get_manager)
+):
+    """Manager endpoint to create a new Analyst under themselves."""
+    existing_user = db.query(models.User).filter(
+        models.User.email == user_in.email
+    ).first()
+    
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+        
+    new_analyst = models.User(
+        email=user_in.email,
+        username=user_in.username,
+        hashed_password=get_password_hash(user_in.password),
+        rbac_level=models.RBACLevel.ANALYST,
+        manager_id=manager_user.id,
+        created_by=manager_user.id
+    )
+    
+    db.add(new_analyst)
+    db.commit()
+    db.refresh(new_analyst)
+    
+    return new_analyst
+
+
+@app.get(f"{settings.API_PREFIX}/manager/analysts", response_model=List[UserOut])
+async def manager_list_analysts(
+    db: Session = Depends(get_db),
+    manager_user: models.User = Depends(get_manager)
+):
+    """Manager endpoint to list their analysts."""
+    return [UserOut.from_orm(a) for a in manager_user.analysts]
+
+
+@app.delete(f"{settings.API_PREFIX}/manager/analysts/{{analyst_id}}")
+async def manager_delete_analyst(
+    analyst_id: int,
+    db: Session = Depends(get_db),
+    manager_user: models.User = Depends(get_manager)
+):
+    """Manager endpoint to delete one of their analysts."""
+    analyst = db.query(models.User).filter(
+        models.User.id == analyst_id,
+        models.User.rbac_level == models.RBACLevel.ANALYST,
+        models.User.manager_id == manager_user.id
+    ).first()
+    
+    if not analyst:
+        raise HTTPException(status_code=404, detail="Analyst not found or not managed by you")
+    
+    db.delete(analyst)
+    db.commit()
+    
+    return {"message": f"Analyst {analyst.email} deleted successfully"}
+
+
+@app.get(f"{settings.API_PREFIX}/manager/jobs", response_model=List[JobWithAnalyst])
+async def manager_get_jobs(
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    manager_user: models.User = Depends(get_manager)
+):
+    """Manager endpoint to get all jobs from their analysts."""
+    query = db.query(models.ProcessingJob).order_by(
+        models.ProcessingJob.created_at.desc()
+    )
+    query = filter_jobs_scope(query, manager_user)
+    jobs = query.limit(limit).offset(offset).all()
+    
+    result = []
+    for job in jobs:
+        analyst = job.user
+        progress = (job.processed_files / job.total_files * 100) if job.total_files > 0 else 0
+        
+        result.append(JobWithAnalyst(
+            job_id=job.id,
+            analyst_email=analyst.email,
+            analyst_username=analyst.username,
+            status=job.status.value,
+            total_files=job.total_files,
+            processed_files=job.processed_files,
+            created_at=job.created_at,
+            progress_percentage=round(progress, 2)
+        ))
+    
+    return result
+
+
+@app.get(f"{settings.API_PREFIX}/analyst/jobs")
+async def analyst_get_jobs(
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Analyst endpoint to get their own jobs."""
+    if current_user.rbac_level != models.RBACLevel.ANALYST:
+        raise HTTPException(status_code=403, detail="Analyst access required")
+    
+    query = db.query(models.ProcessingJob).filter(
+        models.ProcessingJob.user_id == current_user.id
+    ).order_by(models.ProcessingJob.created_at.desc())
+    
+    jobs = query.limit(limit).offset(offset).all()
+    
+    return [
+        {
+            "job_id": job.id,
+            "status": job.status.value,
+            "total_files": job.total_files,
+            "processed_files": job.processed_files,
+            "created_at": job.created_at.isoformat(),
+            "progress_percentage": (job.processed_files / job.total_files * 100) if job.total_files > 0 else 0
+        }
+        for job in jobs
+    ]
+
+# --- END: USER MANAGEMENT ENDPOINTS ---
 
 
 
@@ -301,7 +588,7 @@ async def upload_documents(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # (Your original code...)
+    # Validation checks
     if len(files) > settings.MAX_UPLOAD_FILES:
         raise HTTPException(
             status_code=400,
@@ -326,25 +613,46 @@ async def upload_documents(
                 detail=f"File '{file.filename}' exceeds {settings.MAX_FILE_SIZE_MB}MB limit (size: {size / 1024 / 1024:.2f}MB)"
             )
     
-    if current_user.rbac_level == models.RBACLevel.STATION:
-        if not all([current_user.station_id, current_user.district_id, current_user.state_id]):
-            raise HTTPException(
-                status_code=400,
-                detail="Station-level accounts require station_id, district_id, and state_id assignments before uploading.",
-            )
-    elif current_user.rbac_level == models.RBACLevel.DISTRICT:
-        if not all([current_user.district_id, current_user.state_id]):
-            raise HTTPException(
-                status_code=400,
-                detail="District-level accounts require district_id and state_id assignments before uploading.",
-            )
-    elif current_user.rbac_level == models.RBACLevel.STATE and not current_user.state_id:
+    # RBAC check: Only analysts and managers can upload
+    if current_user.rbac_level == models.RBACLevel.ADMIN:
         raise HTTPException(
-            status_code=400,
-            detail="State-level accounts require a state_id assignment before uploading.",
+            status_code=403,
+            detail="Admin users cannot upload documents. Only managers and analysts can upload."
         )
-
-    job_id = str(uuid.uuid4())
+    
+    # Generate job_id in format: manager_username/analyst_username/uuid
+    job_uuid = str(uuid.uuid4())
+    
+    if current_user.rbac_level == models.RBACLevel.ANALYST:
+        # For analysts, get their manager's email
+        if not current_user.manager_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Analyst must be assigned to a manager before uploading"
+            )
+        
+        manager = db.query(models.User).filter(
+            models.User.id == current_user.manager_id
+        ).first()
+        
+        if not manager:
+            raise HTTPException(
+                status_code=400,
+                detail="Manager not found. Contact admin to assign you to a manager."
+            )
+        
+        job_id = f"{manager.username}/{current_user.username}/{job_uuid}"
+    
+    elif current_user.rbac_level == models.RBACLevel.MANAGER:
+        # For managers uploading, use their username for both manager and analyst parts
+        job_id = f"{current_user.username}/{current_user.username}/{job_uuid}"
+    
+    else:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid user role for document upload"
+        )
+    
     gcs_prefix = f"uploads/{job_id}/"
     
     print(f"Starting upload for job {job_id}: {len(files)} files")
@@ -379,10 +687,6 @@ async def upload_documents(
     job = models.ProcessingJob(
         id=job_id,
         user_id=current_user.id,
-        rbac_level=current_user.rbac_level,
-        station_id=current_user.station_id,
-        district_id=current_user.district_id,
-        state_id=current_user.state_id,
         gcs_prefix=gcs_prefix,
         original_filenames=filenames,
         file_types=file_types,
@@ -410,7 +714,7 @@ async def upload_documents(
         "message": f"Successfully uploaded {len(files)} files. Processing started."
     }
 
-@app.get(f"{settings.API_PREFIX}/jobs/{{job_id}}/status")
+@app.get(f"{settings.API_PREFIX}/jobs/{{job_id:path}}/status")
 async def get_job_status(
     job_id: str,
     db: Session = Depends(get_db),
@@ -446,7 +750,7 @@ async def get_job_status(
     }
 
 
-@app.get(f"{settings.API_PREFIX}/jobs/{{job_id}}/results")
+@app.get(f"{settings.API_PREFIX}/jobs/{{job_id:path}}/results")
 async def get_job_results(
     job_id: str,
     db: Session = Depends(get_db),
@@ -623,7 +927,7 @@ async def get_document_translation(
         "content_type": "translation"
     }
 
-@app.get(f"{settings.API_PREFIX}/jobs/{{job_id}}/graph")
+@app.get(f"{settings.API_PREFIX}/jobs/{{job_id:path}}/graph")
 async def get_job_graph(
     job_id: str,
     db: Session = Depends(get_db),

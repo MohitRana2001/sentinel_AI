@@ -250,6 +250,262 @@ class ApiClient {
 
     return response.json()
   }
+
+  // ============ USER MANAGEMENT APIs ============
+
+  /**
+   * Admin: Sign up as the first admin user
+   */
+  async adminSignup(data: {
+    email: string
+    username: string
+    password: string
+    secret_key: string
+  }): Promise<any> {
+    const response = await fetch(`${this.baseUrl}/admin/signup`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(data),
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Admin signup failed" }))
+      throw new Error(error.detail || "Admin signup failed")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Admin: Create a new manager
+   */
+  async createManager(data: {
+    email: string
+    username: string
+    password: string
+  }): Promise<any> {
+    const response = await fetch(`${this.baseUrl}/admin/managers`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.getAuthHeaders(),
+      },
+      body: JSON.stringify(data),
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Failed to create manager" }))
+      throw new Error(error.detail || "Failed to create manager")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Admin: List all managers with their analysts
+   */
+  async listManagers(): Promise<any[]> {
+    const response = await fetch(`${this.baseUrl}/admin/managers`, {
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      throw new Error("Failed to list managers")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Admin: Delete a manager
+   */
+  async deleteManager(managerId: number): Promise<any> {
+    const response = await fetch(`${this.baseUrl}/admin/managers/${managerId}`, {
+      method: "DELETE",
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Failed to delete manager" }))
+      throw new Error(error.detail || "Failed to delete manager")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Admin: Create a new analyst
+   */
+  async createAnalyst(data: {
+    email: string
+    username: string
+    password: string
+    manager_id: number
+  }): Promise<any> {
+    const response = await fetch(`${this.baseUrl}/admin/analysts`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.getAuthHeaders(),
+      },
+      body: JSON.stringify(data),
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Failed to create analyst" }))
+      throw new Error(error.detail || "Failed to create analyst")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Admin: List all analysts
+   */
+  async listAnalysts(): Promise<any[]> {
+    const response = await fetch(`${this.baseUrl}/admin/analysts`, {
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      throw new Error("Failed to list analysts")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Admin: Reassign an analyst to a different manager
+   */
+  async reassignAnalyst(analystId: number, newManagerId: number): Promise<any> {
+    const response = await fetch(`${this.baseUrl}/admin/analysts/${analystId}/manager`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.getAuthHeaders(),
+      },
+      body: JSON.stringify({ new_manager_id: newManagerId }),
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Failed to reassign analyst" }))
+      throw new Error(error.detail || "Failed to reassign analyst")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Admin: Delete an analyst
+   */
+  async deleteAnalyst(analystId: number): Promise<any> {
+    const response = await fetch(`${this.baseUrl}/admin/analysts/${analystId}`, {
+      method: "DELETE",
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Failed to delete analyst" }))
+      throw new Error(error.detail || "Failed to delete analyst")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Manager: Create an analyst under themselves
+   */
+  async managerCreateAnalyst(data: {
+    email: string
+    username: string
+    password: string
+  }): Promise<any> {
+    const response = await fetch(`${this.baseUrl}/manager/analysts`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.getAuthHeaders(),
+      },
+      body: JSON.stringify(data),
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Failed to create analyst" }))
+      throw new Error(error.detail || "Failed to create analyst")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Manager: List their analysts
+   */
+  async managerListAnalysts(): Promise<any[]> {
+    const response = await fetch(`${this.baseUrl}/manager/analysts`, {
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      throw new Error("Failed to list analysts")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Manager: Delete one of their analysts
+   */
+  async managerDeleteAnalyst(analystId: number): Promise<any> {
+    const response = await fetch(`${this.baseUrl}/manager/analysts/${analystId}`, {
+      method: "DELETE",
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: "Failed to delete analyst" }))
+      throw new Error(error.detail || "Failed to delete analyst")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Manager: Get all jobs from their analysts
+   */
+  async getManagerJobs(limit: number = 50, offset: number = 0): Promise<any[]> {
+    const response = await fetch(
+      `${this.baseUrl}/manager/jobs?limit=${limit}&offset=${offset}`,
+      {
+        headers: this.getAuthHeaders(),
+      }
+    )
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch manager jobs")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Analyst: Get own jobs
+   */
+  async getAnalystJobs(limit: number = 50, offset: number = 0): Promise<any[]> {
+    const response = await fetch(
+      `${this.baseUrl}/analyst/jobs?limit=${limit}&offset=${offset}`,
+      {
+        headers: this.getAuthHeaders(),
+      }
+    )
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch analyst jobs")
+    }
+
+    return response.json()
+  }
 }
 
 // Export singleton instance

@@ -10,9 +10,7 @@ class UserBase(BaseModel):
     email: EmailStr
     username: constr(min_length=3, max_length=64)  # type: ignore[var-annotated]
     rbac_level: RBACLevel
-    station_id: Optional[str] = None
-    district_id: Optional[str] = None
-    state_id: Optional[str] = None
+    manager_id: Optional[int] = None
 
 
 class UserCreate(UserBase):
@@ -28,9 +26,10 @@ class UserRead(UserBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    created_by: Optional[int] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class Token(BaseModel):
@@ -42,7 +41,5 @@ class Token(BaseModel):
 class TokenPayload(BaseModel):
     sub: str
     rbac_level: str
-    station_id: Optional[str] = None
-    district_id: Optional[str] = None
-    state_id: Optional[str] = None
+    manager_id: Optional[int] = None
     exp: int

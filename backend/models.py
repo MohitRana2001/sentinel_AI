@@ -11,9 +11,6 @@ class RBACLevel(str, enum.Enum):
     ADMIN = "admin"
     MANAGER = "manager"
     ANALYST = "analyst"
-    STATION = "station"
-    DISTRICT = "district"
-    STATE = "state"
 
 
 class JobStatus(str, enum.Enum):
@@ -38,30 +35,33 @@ class User(Base):
     username = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     
-    # RBAC
-    rbac_level = Column(SQLEnum(RBACLevel), default=RBACLevel.STATION, nullable=False)
-    station_id = Column(String, index=True)
-    district_id = Column(String, index=True)
-    state_id = Column(String, index=True)
+    # RBAC - Role-based access control
+    rbac_level = Column(SQLEnum(RBACLevel), default=RBACLevel.ANALYST, nullable=False)
+    
+    # Manager-Analyst relationship
+    manager_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    jobs = relationship("ProcessingJob", back_populates="user")
+    jobs = relationship("ProcessingJob", back_populates="user", foreign_keys="ProcessingJob.user_id")
+    
+    # Self-referential relationships for manager-analyst hierarchy
+    analysts = relationship("User", back_populates="manager", foreign_keys=[manager_id])
+    manager = relationship("User", back_populates="analysts", foreign_keys=[manager_id], remote_side=[id],)
+    
+    # Track who created this user
+    creator = relationship("User", foreign_keys=[created_by], remote_side=[id])
 
 
 class ProcessingJob(Base):
-    """Processing job model"""
+    """Processing job model with format: manager_username/analyst_username/job_uuid"""
     __tablename__ = "processing_jobs"
     
-    id = Column(String, primary_key=True, index=True)  # UUID
+    id = Column(String, primary_key=True, index=True)  # Format: manager_username/analyst_username/uuid
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    
-    rbac_level = Column(SQLEnum(RBACLevel), nullable=False)
-    station_id = Column(String, index=True)
-    district_id = Column(String, index=True)
-    state_id = Column(String, index=True)
     
     status = Column(SQLEnum(JobStatus), default=JobStatus.QUEUED, nullable=False)
     
@@ -79,8 +79,19 @@ class ProcessingJob(Base):
     
     error_message = Column(Text)
     
-    user = relationship("User", back_populates="jobs")
+    user = relationship("User", back_populates="jobs", foreign_keys=[user_id])
     documents = relationship("Document", back_populates="job")
+    
+    def parse_job_id(self):
+        """Parse job_id to extract manager_username, analyst_username, and job_uuid"""
+        parts = self.id.split("/")
+        if len(parts) == 3:
+            return {
+                "manager_username": parts[0],
+                "analyst_username": parts[1],
+                "job_uuid": parts[2]
+            }
+        return None
 
 
 class Document(Base):
@@ -92,11 +103,6 @@ class Document(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=False)
-    
-    rbac_level = Column(SQLEnum(RBACLevel), nullable=False)
-    station_id = Column(String, index=True)
-    district_id = Column(String, index=True)
-    state_id = Column(String, index=True)
     
     original_filename = Column(String, nullable=False)
     file_type = Column(SQLEnum(FileType), nullable=False)
@@ -189,10 +195,5 @@ class ActivityLog(Base):
     
     activity_type = Column(String, nullable=False)  # upload, query, view_graph, etc.
     details = Column(JSON)
-    
-    rbac_level = Column(SQLEnum(RBACLevel))
-    station_id = Column(String)
-    district_id = Column(String)
-    state_id = Column(String)
     
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)

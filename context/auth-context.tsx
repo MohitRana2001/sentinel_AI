@@ -22,10 +22,9 @@ interface BackendUser {
   id: number;
   email: string;
   username: string;
-  rbac_level: "station" | "district" | "state";
-  station_id?: string | null;
-  district_id?: string | null;
-  state_id?: string | null;
+  rbac_level: "admin" | "manager" | "analyst";
+  manager_id?: number | null;
+  created_by?: number | null;
 }
 
 function mapBackendUser(payload: BackendUser): User {
@@ -34,9 +33,8 @@ function mapBackendUser(payload: BackendUser): User {
     email: payload.email,
     name: payload.username,
     rbacLevel: payload.rbac_level,
-    stationId: payload.station_id ?? null,
-    districtId: payload.district_id ?? null,
-    stateId: payload.state_id ?? null,
+    managerId: payload.manager_id ?? null,
+    createdBy: payload.created_by ?? null,
   };
 }
 
@@ -123,10 +121,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       email: string;
       username: string;
       password: string;
-      rbacLevel: "station" | "district" | "state";
-      stationId?: string;
-      districtId?: string;
-      stateId?: string;
+      rbacLevel: "admin" | "manager" | "analyst";
+      managerId?: number;
     }) => {
       await request(`${API_BASE_URL}/auth/signup`, {
         method: "POST",
@@ -135,9 +131,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           username: data.username,
           password: data.password,
           rbac_level: data.rbacLevel,
-          station_id: data.stationId,
-          district_id: data.districtId,
-          state_id: data.stateId,
+          manager_id: data.managerId,
         }),
       });
       await login(data.email, data.password);

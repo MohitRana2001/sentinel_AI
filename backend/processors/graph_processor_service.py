@@ -265,8 +265,6 @@ class GraphProcessorService:
             ON CREATE SET 
                 d.job_id = $job_id,
                 d.filename = $filename,
-                d.rbac_level = $rbac_level,
-                d.station_id = $station_id,
                 d.created_at = datetime()
             SET d.updated_at = datetime()
             """,
@@ -274,8 +272,6 @@ class GraphProcessorService:
                 "job_id": job_id,
                 "document_id": str(document.id),
                 "filename": document.original_filename,
-                "rbac_level": document.rbac_level.value if document.rbac_level else None,
-                "station_id": document.station_id,
             },
         )
         

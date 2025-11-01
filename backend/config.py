@@ -29,10 +29,11 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api/v1"
     ADMIN_SIGNUP_SECRET: str = "D9ig7olbsvvDcYdubTl90ZcxdbLyQfVDTDXKldmyYGo"
 
-    NEO4J_URI = "bolt://34.47.152.177:7687"  
-    NEO4J_USERNAME = "neo4j"
-    NEO4J_PASSWORD = "Google@123"
-    NEO4J_DATABASE = "neo4j"
+    NEO4J_URI: str = os.getenv("bolt://localhost:7687", "url")
+    NEO4J_USERNAME: str = os.getenv("NEO4J_USERNAME", "neo4j")
+    NEO4J_PASSWORD: str = os.getenv("localpass", "pass")
+    NEO4J_DATABASE: str = os.getenv("NEO4J_DATABASE", "neo4j")
+
     
     # ===== LOCAL DEVELOPMENT MODE =====
     # Set USE_GEMINI_FOR_DEV=true and provide GEMINI_API_KEY for local testing
@@ -118,7 +119,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
     
     # RBAC Levels
-    RBAC_LEVELS: List[str] = ["station", "district", "state"]
+    RBAC_LEVELS: List[str] = ["admin", "manager", "analyst"]
     
     # CORS
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")

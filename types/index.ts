@@ -2,10 +2,42 @@ export interface User {
   id: string
   email: string
   name: string
-  rbacLevel: "station" | "district" | "state"
-  stationId?: string | null
-  districtId?: string | null
-  stateId?: string | null
+  rbacLevel: "admin" | "manager" | "analyst"
+  managerId?: number | null
+  createdBy?: number | null
+}
+
+export interface Manager {
+  id: number
+  email: string
+  username: string
+  created_at: string
+  analysts: Analyst[]
+}
+
+export interface Analyst {
+  id: number
+  email: string
+  username: string
+  rbac_level: "analyst"
+  manager_id: number | null
+  created_by: number | null
+  created_at: string
+}
+
+export interface AnalystWithManager extends Analyst {
+  manager_email?: string | null
+}
+
+export interface JobWithAnalyst {
+  job_id: string
+  analyst_email: string
+  analyst_username: string
+  status: string
+  total_files: number
+  processed_files: number
+  created_at: string
+  progress_percentage: number
 }
 
 export interface ChartData {
@@ -70,10 +102,8 @@ export interface AuthContextType {
     email: string
     username: string
     password: string
-    rbacLevel: "station" | "district" | "state"
-    stationId?: string
-    districtId?: string
-    stateId?: string
+    rbacLevel: "admin" | "manager" | "analyst"
+    managerId?: number
   }) => Promise<void>
   logout: () => Promise<void>
   documents: Document[]

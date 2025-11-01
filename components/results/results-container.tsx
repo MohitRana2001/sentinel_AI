@@ -9,7 +9,7 @@ import { SummaryTab } from "./summary-tab";
 import { TranscriptionTab } from "./transcription-tab";
 import { TranslationTab } from "./translation-tab";
 import { GraphVisualization } from "./graph-visualization";
-import { ArrowLeft, Download } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 
 interface ResultsContainerProps {
   result: AnalysisResult;
@@ -67,11 +67,7 @@ export function ResultsContainer({
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={onReset}>
               <ArrowLeft className="h-4 w-4 mr-2" />
-              New Analysis
-            </Button>
-            <Button variant="outline" size="sm">
-              <Download className="h-4 w-4 mr-2" />
-              Export
+              Back to Dashboard
             </Button>
           </div>
         </div>
@@ -138,9 +134,7 @@ export function ResultsContainer({
               <TranslationTab translation={activeDocument.translation || ""} />
             )}
 
-            {activeTab === "graph" && (
-              <GraphVisualization jobId={jobId} />
-            )}
+            {activeTab === "graph" && <GraphVisualization jobId={jobId} />}
 
             {activeTab === "chat" && (
               <ChatTab jobId={jobId} documents={result.documents} />

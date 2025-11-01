@@ -28,39 +28,9 @@ router = APIRouter(
 )
 
 
-def _validate_rbac_scope(payload: UserCreate) -> None:
-    """
-    Ensure RBAC hierarchy metadata is present for the user's role.
-    Station level requires station/district/state.
-    District level requires district/state.
-    State level requires state.
-    """
-    rbac_level = payload.rbac_level
-
-    if rbac_level == models.RBACLevel.STATION:
-        if not payload.station_id or not payload.district_id or not payload.state_id:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Station level users must include station_id, district_id and state_id",
-            )
-    elif rbac_level == models.RBACLevel.DISTRICT:
-        if not payload.district_id or not payload.state_id:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="District level users must include district_id and state_id",
-            )
-    elif rbac_level == models.RBACLevel.STATE:
-        if not payload.state_id:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="State level users must include state_id",
-            )
-
-
 @router.post("/signup", response_model=UserRead, status_code=status.HTTP_201_CREATED)
 def signup(payload: UserCreate, db: Session = Depends(get_db)) -> models.User:
-    """Create a new user with hashed password and RBAC metadata"""
-    _validate_rbac_scope(payload)
+    """Create a new user with hashed password and role-based RBAC"""
 
     existing_user = (
         db.query(models.User)
@@ -79,9 +49,7 @@ def signup(payload: UserCreate, db: Session = Depends(get_db)) -> models.User:
         username=payload.username,
         hashed_password=get_password_hash(payload.password),
         rbac_level=payload.rbac_level,
-        station_id=payload.station_id,
-        district_id=payload.district_id,
-        state_id=payload.state_id,
+        manager_id=payload.manager_id,
     )
 
     db.add(user)
@@ -103,9 +71,7 @@ def login(payload: UserLogin, db: Session = Depends(get_db)) -> Token:
     token_payload = {
         "sub": str(user.id),
         "rbac_level": user.rbac_level.value,
-        "station_id": user.station_id,
-        "district_id": user.district_id,
-        "state_id": user.state_id,
+        "manager_id": user.manager_id,
     }
 
     access_token, expires_at = create_access_token(

@@ -1,0 +1,5 @@
+This document outlines a plan to update the Document Analysis Tool with a new Role-Based Access Control (RBAC) model, replacing the previous station/district/state scheme with Admin, Manager, and Analyst roles. The goal is to govern data access and user management, implementing a hierarchical system where each role has distinct permissions.
+
+The Admin manages Managers and Analyst assignments, while Managers oversee Analysts and their data. Analysts can upload and analyze their own documents. The system architecture separates the frontend (React with Shadcn UI) and backend (Python API), utilizing SQLite, Neo4j, and Redis for storage, knowledge graphs, and caching, respectively.
+
+The update involves database schema redesign, with tables for Users, Jobs, and Documents, and RBAC enforcement at the API and data levels. The document also details the document processing pipeline, knowledge graph integration, chat service, frontend component design, sequence flows, migration plan, and a stepwise implementation roadmap. The goal is to enhance security, manageability, and functionality for document analysis.

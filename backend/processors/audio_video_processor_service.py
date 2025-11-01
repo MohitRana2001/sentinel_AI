@@ -106,8 +106,13 @@ class AudioVideoProcessorService:
                 transcription = "[ No transcription available ]"
                 print(f"⚠️ Empty transcription for {filename}")
             
-            # Save transcription to GCS
-            transcription_path = gcs_path + '-transcription.txt'
+            # Determine naming convention based on translation
+            # == (two equal signs) for transcription + summary
+            # === (three equal signs) for transcription + summary + translation
+            equal_prefix = "===" if is_hindi else "=="
+            
+            # Save transcription to GCS with naming convention
+            transcription_path = gcs_path + f'{equal_prefix}transcription.txt'
             gcs_storage.upload_text(transcription, transcription_path)
             print(f"✅ Transcription saved: {len(transcription)} characters")
             
@@ -133,8 +138,8 @@ class AudioVideoProcessorService:
                     with open(translated_path, 'r', encoding='utf-8') as f:
                         final_text = f.read()
                     
-                    # Upload to GCS
-                    translated_text_path = gcs_path + '-translated.txt'
+                    # Upload to GCS with three-equal-sign naming
+                    translated_text_path = gcs_path + f'{equal_prefix}translated.txt'
                     gcs_storage.upload_text(final_text, translated_text_path)
                     
                     # Cleanup
@@ -150,8 +155,8 @@ class AudioVideoProcessorService:
             print(f"📝 Generating summary...")
             summary = self.generate_summary(final_text)
             
-            # Save summary to GCS
-            summary_path = gcs_path + '-summary.txt'
+            # Save summary to GCS with naming convention
+            summary_path = gcs_path + f'{equal_prefix}summary.txt'
             gcs_storage.upload_text(summary, summary_path)
             
         finally:
@@ -162,10 +167,6 @@ class AudioVideoProcessorService:
         # Step 4: Create document record
         document = models.Document(
             job_id=job.id,
-            rbac_level=job.rbac_level,
-            station_id=job.station_id,
-            district_id=job.district_id,
-            state_id=job.state_id,
             original_filename=filename,
             file_type=models.FileType.AUDIO if filename.lower().endswith(('.mp3', '.wav', '.m4a')) else models.FileType.VIDEO,
             gcs_path=gcs_path,

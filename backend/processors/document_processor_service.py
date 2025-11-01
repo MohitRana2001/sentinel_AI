@@ -112,7 +112,11 @@ class DocumentProcessorService:
             # Detect language from filename
             filename = os.path.basename(gcs_path)
             is_hindi = 'hindi' in filename.lower()
-            lang = 'hin' if is_hindi else 'eng'
+            
+            # Multi-language support for Tesseract OCR
+            # Support English, Hindi, Indian regional languages, and Mandarin Chinese
+            # Tesseract can detect and extract from multiple languages simultaneously
+            lang = 'eng+hin+ben+guj+kan+mal+mar+pan+tam+tel+chi_sim+chi_tra'
             
             # Step 1: Text Extraction (OCR for PDFs, direct read for TXT)
             if suffix.lower() == '.txt':
@@ -140,13 +144,14 @@ class DocumentProcessorService:
                 print(f"📖 Running OCR ({lang})...")
                 extracted_text = ocr_pdf_pymupdf(temp_file, lang)
             
-            # Save extracted text to GCS
-            extracted_text_path = gcs_path.replace(suffix, '-extracted.txt')
-            gcs_storage.upload_text(extracted_text, extracted_text_path)
-            
             # Step 2: Translation (if Hindi)
             translated_text_path = None
             final_text = extracted_text
+            
+            # Determine naming convention based on translation
+            # -- (two dashes) for extracted + summary
+            # --- (three dashes) for extracted + summary + translation
+            dash_prefix = "---" if is_hindi else "--"
             
             if is_hindi:
                 print(f"🌐 Translating from Hindi...")
@@ -163,12 +168,16 @@ class DocumentProcessorService:
                 with open(translated_path, 'r') as f:
                     final_text = f.read()
                 
-                # Upload to GCS
-                translated_text_path = gcs_path.replace(suffix, '-translated.txt')
+                # Upload to GCS with three-dash naming
+                translated_text_path = gcs_path.replace(suffix, f'{dash_prefix}translated.txt')
                 gcs_storage.upload_text(final_text, translated_text_path)
                 
                 os.unlink(temp_extracted.name)
                 os.unlink(translated_path)
+            
+            # Save extracted text to GCS with naming convention
+            extracted_text_path = gcs_path.replace(suffix, f'{dash_prefix}extracted.txt')
+            gcs_storage.upload_text(extracted_text, extracted_text_path)
             
             # Step 3: Summarization
             print(f"📝 Generating summary...")
@@ -178,8 +187,8 @@ class DocumentProcessorService:
             
             summary = get_summary(temp_final.name, self.ollama_client)
             
-            # Upload summary to GCS
-            summary_path = gcs_path.replace(suffix, '-summary.txt')
+            # Upload summary to GCS with naming convention
+            summary_path = gcs_path.replace(suffix, f'{dash_prefix}summary.txt')
             gcs_storage.upload_text(summary, summary_path)
             
             os.unlink(temp_final.name)
@@ -203,10 +212,6 @@ class DocumentProcessorService:
                 # Create new document
                 document = models.Document(
                     job_id=job.id,
-                    rbac_level=job.rbac_level,
-                    station_id=job.station_id,
-                    district_id=job.district_id,
-                    state_id=job.state_id,
                     original_filename=filename,
                     file_type=models.FileType.DOCUMENT,
                     gcs_path=gcs_path

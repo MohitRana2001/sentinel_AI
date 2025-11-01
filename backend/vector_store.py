@@ -84,22 +84,25 @@ class VectorStore:
                 query_embedding = None
         
         # Build query
-        query_obj = self.db.query(models.DocumentChunk).join(models.Document)
+        query_obj = self.db.query(models.DocumentChunk).join(models.Document).join(models.ProcessingJob)
 
+        # Apply RBAC filtering
         if user:
-            if user.rbac_level == models.RBACLevel.STATE:
-                query_obj = query_obj.filter(models.Document.state_id == user.state_id)
-            elif user.rbac_level == models.RBACLevel.DISTRICT:
+            if user.rbac_level == models.RBACLevel.ADMIN:
+                # Admin can access all documents
+                pass
+            elif user.rbac_level == models.RBACLevel.MANAGER:
+                # Manager can access their own documents and their analysts' documents
+                from sqlalchemy import or_
                 query_obj = query_obj.filter(
-                    models.Document.state_id == user.state_id,
-                    models.Document.district_id == user.district_id,
-                )
-            else:
-                query_obj = query_obj.filter(
-                    models.Document.state_id == user.state_id,
-                    models.Document.district_id == user.district_id,
-                    models.Document.station_id == user.station_id,
-                )
+                    or_(
+                        models.ProcessingJob.user_id == user.id,
+                        models.User.manager_id == user.id
+                    )
+                ).join(models.User, models.ProcessingJob.user_id == models.User.id)
+            else:  # ANALYST
+                # Analyst can only access their own documents
+                query_obj = query_obj.filter(models.ProcessingJob.user_id == user.id)
     
         if document_id:
             query_obj = query_obj.filter(models.DocumentChunk.document_id == document_id)

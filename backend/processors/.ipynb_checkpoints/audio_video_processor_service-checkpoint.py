@@ -1,3 +1,8 @@
+"""
+Audio/Video Processor Service
+Listens to Redis Pub/Sub for audio/video processing jobs
+Uses Gemini (dev mode) or Gemma3:12b multimodal LLM (production) for transcription
+"""
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,7 +48,7 @@ class AudioVideoProcessorService:
             ).first()
             
             if not job:
-                print(f"Job {job_id} not found")
+                print(f"❌ Job {job_id} not found")
                 return
             
             # List all audio/video files in GCS prefix
@@ -52,13 +57,13 @@ class AudioVideoProcessorService:
                 ('.mp3', '.wav', '.mp4', '.avi', '.mov', '.m4a')
             )]
             
-            print(f"Found {len(media_files)} media files to process")
+            print(f"📁 Found {len(media_files)} media files to process")
             
             for file_path in media_files:
                 try:
                     self.process_media(db, job, file_path)
                 except Exception as e:
-                    print(f"Error processing {file_path}: {e}")
+                    print(f"❌ Error processing {file_path}: {e}")
                     traceback.print_exc()
             
             print(f"✅ Media processing completed for job {job_id}")
@@ -69,10 +74,10 @@ class AudioVideoProcessorService:
                 job.status = models.JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
                 db.commit()
-                print(f"Job {job_id} marked as COMPLETED ({job.processed_files}/{job.total_files} files processed)")
+                print(f"🎉 Job {job_id} marked as COMPLETED ({job.processed_files}/{job.total_files} files processed)")
             
         except Exception as e:
-            print(f"Error in audio/video processor: {e}")
+            print(f"❌ Error in audio/video processor: {e}")
             traceback.print_exc()
         finally:
             db.close()

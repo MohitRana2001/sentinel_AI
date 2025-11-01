@@ -1,3 +1,6 @@
+"""
+RBAC utilities for hierarchical access control
+"""
 from sqlalchemy.orm import Query
 
 import models

@@ -161,7 +161,8 @@ def get_summary(file_path, ollama_client=None):
         ollama_client = Client(host=OLLAMA_HOST)
     
     prompt = f'''Please summarise the content between the tags <summarise></summarise>.
-    Please only summarize the content here and not anything else.  Start your response with an          overall understanding of the entire content. Then summarise any specific points that are         important.
+    Please only summarize the content here and not anything else.  Start your response with an overall
+    understanding of the entire content. Then summarise any specific points that are important.
     Please note that, some content have been generated via OCR and machine translations. Try your best to understand and summarize them:
     <summarise>{document_content}</summarise>"
     '''

@@ -24,13 +24,6 @@ TOKEN_BLACKLIST_PREFIX = "sentinel:auth:revoked:"
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
     Verify a plain text password against a hashed password using bcrypt.
-    
-    Args:
-        plain_password: The plain text password to verify
-        hashed_password: The hashed password from the database
-        
-    Returns:
-        True if the password matches, False otherwise
     """
     return pwd_context.verify(plain_password, hashed_password)
 

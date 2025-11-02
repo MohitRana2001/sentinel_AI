@@ -184,7 +184,8 @@ def get_summary(file_path, ollama_client=None):
     )
     print(f"Summarization for {file_path} in ",(time.time() - s) * 1e3, "ms")
     print(stream['message']['content'])
-    return stream['message']['content']
+    summary = stream['message']['content']
+    return summary
             
 if __name__ == "__main__":
     s = time.time()

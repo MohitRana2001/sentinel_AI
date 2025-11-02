@@ -160,7 +160,14 @@ export function ResultsContainer({
                   <tr key={doc.id} className="border-t border-slate-200/70">
                     <td className="py-2 pr-4 font-medium">{doc.fileName}</td>
                     <td className="py-2 pr-4">
-                      {new Date(doc.uploadedAt).toLocaleString()}
+                      {new Date(doc.uploadedAt).toLocaleString("en-IN", {
+                        timeZone: "Asia/Kolkata",
+                        year: "numeric",
+                        month: "short",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
                     </td>
                     <td className="py-2 pr-4 capitalize">{doc.fileType}</td>
                     <td className="py-2 pr-4">{doc.hasAudio ? "Yes" : "No"}</td>

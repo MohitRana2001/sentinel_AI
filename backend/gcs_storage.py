@@ -21,31 +21,49 @@ class GCSStorage:
         self.local_mode = False
         self.local_path = Path(settings.LOCAL_GCS_STORAGE_PATH)
         bucket_name = settings.GCS_BUCKET_NAME
-        project_id = settings.GCS_PROJECT_ID
         credentials_path = settings.GCS_CREDENTIALS_PATH
         credentials_env = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         
         try:
-            if bucket_name and os.path.exists(credentials_path):
-                credentials = service_account.Credentials.from_service_account_file(credentials_path)
-                self.client = storage.Client(credentials=credentials, project=project_id or credentials.project_id)
-            elif bucket_name and credentials_env and os.path.exists(credentials_env):
-                credentials = service_account.Credentials.from_service_account_file(credentials_env)
-                self.client = storage.Client(credentials=credentials, project=project_id or credentials.project_id)
-            elif bucket_name and project_id:
-                # Use default credentials for GCP environments
-                self.client = storage.Client(project=project_id or None)
-            else:
-                raise DefaultCredentialsError("Missing bucket configuration for local fallback.")
+            if not bucket_name:
+                raise DefaultCredentialsError("No GCS bucket name configured")
             
-            self.bucket = self.client.bucket(bucket_name)
-        except DefaultCredentialsError:
+            # Production: Use default application credentials (service account in GCP environment)
+            # This automatically uses the credentials attached to the service account
+            try:
+                print("🔷 Attempting to use default application credentials for GCS...")
+                self.client = storage.Client()
+                self.bucket = self.client.bucket(bucket_name)
+                # Test connection
+                self.bucket.exists()
+                print(f"✅ Connected to GCS bucket: {bucket_name} (using default credentials)")
+            except Exception as default_creds_error:
+                # Dev: Fall back to credentials file if provided
+                if credentials_path and os.path.exists(credentials_path):
+                    print(f"⚠️  Default credentials failed, using credentials file: {credentials_path}")
+                    credentials = service_account.Credentials.from_service_account_file(credentials_path)
+                    project_id = credentials.project_id
+                    self.client = storage.Client(credentials=credentials, project=project_id)
+                    self.bucket = self.client.bucket(bucket_name)
+                    print(f"✅ Connected to GCS bucket: {bucket_name} (using credentials file)")
+                elif credentials_env and os.path.exists(credentials_env):
+                    print(f"⚠️  Default credentials failed, using GOOGLE_APPLICATION_CREDENTIALS: {credentials_env}")
+                    credentials = service_account.Credentials.from_service_account_file(credentials_env)
+                    project_id = credentials.project_id
+                    self.client = storage.Client(credentials=credentials, project=project_id)
+                    self.bucket = self.client.bucket(bucket_name)
+                    print(f"✅ Connected to GCS bucket: {bucket_name} (using env credentials)")
+                else:
+                    raise DefaultCredentialsError(f"Could not authenticate to GCS: {default_creds_error}")
+            
+        except (DefaultCredentialsError, Exception) as e:
             # Local development fallback that mirrors the GCS interface using the filesystem
             self.local_mode = True
             self.client = None
             self.bucket = None
             self.local_path.mkdir(parents=True, exist_ok=True)
-            print(f"Warning: GCS credentials not found. Using local storage at {self.local_path}")
+            print(f"⚠️  GCS not available: {e}")
+            print(f"📁 Using local storage at {self.local_path}")
 
     def _local_target(self, gcs_path: str) -> Path:
         """Map GCS path to local filesystem path."""

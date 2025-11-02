@@ -1063,8 +1063,10 @@ async def chat_with_documents(
 
         context = "\n\n".join([r["chunk_text"][:800] for r in results[:5]])
         
-        if settings.GEMINI_API_KEY:
+        # ===== LOCAL DEV MODE: Use Gemini if configured =====
+        if settings.USE_GEMINI_FOR_DEV and settings.GEMINI_API_KEY:
             try:
+                print("🔷 Using Gemini for chat (LOCAL DEV MODE)")
                 agent = GoogleDocAgent(api_key=settings.GEMINI_API_KEY, model=settings.GOOGLE_CHAT_MODEL)
                 
                 enriched_chunks = []
@@ -1102,15 +1104,70 @@ async def chat_with_documents(
                     "mode": f"google-{settings.GOOGLE_CHAT_MODEL}"
                 }
             except Exception as agent_error:
-                print(f"⚠️  Google agent error: {agent_error}")
+                print(f"⚠️  Gemini chat error, falling back to Ollama: {agent_error}")
                 import traceback
                 traceback.print_exc()
 
-        return {
-            "response": f"Based on the document excerpts:\n\n{context}\n\n(Note: For better chat responses, configure GEMINI_API_KEY)",
-            "sources": results[:5],
-            "mode": "context-only"
-        }
+        # ===== PRODUCTION MODE: Use Ollama/Gemma =====
+        print("🔧 Using Ollama for chat (PRODUCTION MODE)")
+        try:
+            from ollama import Client
+            ollama_client = Client(host=f"http://{settings.CHAT_LLM_HOST}:{settings.CHAT_LLM_PORT}")
+            
+            # Prepare context from chunks
+            context_with_sources = []
+            for idx, r in enumerate(results[:5]):
+                chunk_preview = r["chunk_text"][:800]
+                context_with_sources.append(f"[Source {idx+1}]\n{chunk_preview}")
+            
+            full_context = "\n\n".join(context_with_sources)
+            
+            # Create RAG prompt
+            prompt = f"""You are a helpful assistant analyzing documents. Based on the following document excerpts, answer the user's question accurately and concisely.
+
+Document Excerpts:
+{full_context}
+
+User Question: {message}
+
+Please provide a clear and informative answer based only on the information in the excerpts above. If the answer is not in the excerpts, say so."""
+            
+            # Call Ollama
+            response = ollama_client.chat(
+                model=settings.CHAT_LLM_MODEL,
+                messages=[{
+                    'role': 'user',
+                    'content': prompt,
+                }],
+            )
+            
+            response_text = response['message']['content']
+            
+            display_sources = []
+            for r in results[:5]:
+                display_sources.append({
+                    "chunk_text": r["chunk_text"][:500],
+                    "document_id": r.get("document_id"),
+                    "chunk_index": r.get("chunk_index"),
+                    "metadata": r.get("metadata", {})
+                })
+            
+            return {
+                "response": response_text,
+                "sources": display_sources,
+                "mode": f"ollama-{settings.CHAT_LLM_MODEL}"
+            }
+        except Exception as ollama_error:
+            print(f"❌ Ollama chat error: {ollama_error}")
+            import traceback
+            traceback.print_exc()
+            
+            # Final fallback: return context only
+            return {
+                "response": f"Based on the document excerpts:\n\n{context}\n\n(Chat LLM unavailable)",
+                "sources": results[:5],
+                "mode": "context-only"
+            }
     except Exception as e:
         print(f"❌ Chat error: {e}")
         raise HTTPException(500, f"Chat failed: {str(e)}")

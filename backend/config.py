@@ -29,29 +29,23 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api/v1"
     ADMIN_SIGNUP_SECRET: str = "D9ig7olbsvvDcYdubTl90ZcxdbLyQfVDTDXKldmyYGo"
 
-    NEO4J_URI: str = os.getenv("bolt://localhost:7687", "url")
+    NEO4J_URI: str = os.getenv("NEO4j_URI", "url")
     NEO4J_USERNAME: str = os.getenv("NEO4J_USERNAME", "neo4j")
-    NEO4J_PASSWORD: str = os.getenv("localpass", "pass")
+    NEO4J_PASSWORD: str = os.getenv("NEO4j_PASSWORD", "pass")
     NEO4J_DATABASE: str = os.getenv("NEO4J_DATABASE", "neo4j")
 
     
-    # ===== LOCAL DEVELOPMENT MODE =====
-    # Set USE_GEMINI_FOR_DEV=true and provide GEMINI_API_KEY for local testing
-    # This bypasses Ollama/Gemma models and uses Google Gemini API instead
     USE_GEMINI_FOR_DEV: bool = os.getenv("USE_GEMINI_FOR_DEV", "false").lower() == "true"
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     
-    # Use SQLite instead of PostgreSQL for local dev (no database setup needed)
     USE_SQLITE_FOR_DEV: bool = os.getenv("USE_SQLITE_FOR_DEV", "false").lower() == "true"
     SQLITE_DB_PATH: str = os.getenv("SQLITE_DB_PATH", "./sentinel_dev.db")
     
-    # Upload Limits (Configurable via Docker)
     MAX_UPLOAD_FILES: int = int(os.getenv("MAX_UPLOAD_FILES", "10"))
     MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "4"))
     ALLOWED_EXTENSIONS: str = os.getenv("ALLOWED_EXTENSIONS", ".pdf,.docx,.txt,.mp3,.wav,.mp4,.avi,.mov")
     
-    # GCS Configuration
-    GCS_BUCKET_NAME: str = os.getenv("GCS_BUCKET_NAME", "ib-app-test")
+    GCS_BUCKET_NAME: str = os.getenv("GCS_BUCKET_NAME", "")
     GCS_PROJECT_ID: str = os.getenv("GCS_PROJECT_ID", "")
     GCS_CREDENTIALS_PATH: str = os.getenv("GCS_CREDENTIALS_PATH", "/app/credentials/gcs-key.json")
     LOCAL_GCS_STORAGE_PATH: str = os.getenv("LOCAL_GCS_STORAGE_PATH", "./.local_gcs")
@@ -77,7 +71,6 @@ class Settings(BaseSettings):
     
     @property
     def DATABASE_URL(self) -> str:
-        # Use SQLite for local development if configured
         if self.USE_SQLITE_FOR_DEV:
             return f"sqlite:///{self.SQLITE_DB_PATH}"
         return f"postgresql://{self.ALLOYDB_USER}:{self.ALLOYDB_PASSWORD}@{self.ALLOYDB_HOST}:{self.ALLOYDB_PORT}/{self.ALLOYDB_DATABASE}"
@@ -88,54 +81,41 @@ class Settings(BaseSettings):
             return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
     
-    # LLM Configuration
-    # Summary LLM (Gemma3:1b on CPU)
     SUMMARY_LLM_HOST: str = os.getenv("SUMMARY_LLM_HOST", "localhost")
     SUMMARY_LLM_PORT: int = int(os.getenv("SUMMARY_LLM_PORT", "11434"))
     SUMMARY_LLM_MODEL: str = os.getenv("SUMMARY_LLM_MODEL", "gemma3:1b")
     
-    # Graph/NER LLM (Gemma3:4b on CPU)
     GRAPH_LLM_HOST: str = os.getenv("GRAPH_LLM_HOST", "localhost")
     GRAPH_LLM_PORT: int = int(os.getenv("GRAPH_LLM_PORT", "11435"))
     GRAPH_LLM_MODEL: str = os.getenv("GRAPH_LLM_MODEL", "gemma3:4b")
     
-    # Chat LLM (Gemma3:1b on CPU)
     CHAT_LLM_HOST: str = os.getenv("CHAT_LLM_HOST", "localhost")
     CHAT_LLM_PORT: int = int(os.getenv("CHAT_LLM_PORT", "11436"))
     CHAT_LLM_MODEL: str = os.getenv("CHAT_LLM_MODEL", "gemma3:1b")
     
-    # Multimodal LLM (Gemma3:12b on GPU)
     MULTIMODAL_LLM_HOST: str = os.getenv("MULTIMODAL_LLM_HOST", "localhost")
     MULTIMODAL_LLM_PORT: int = int(os.getenv("MULTIMODAL_LLM_PORT", "11437"))
     MULTIMODAL_LLM_MODEL: str = os.getenv("MULTIMODAL_LLM_MODEL", "gemma3:12b")
     
-    # Translation Configuration
     TRANSLATION_THRESHOLD_MB: int = int(os.getenv("TRANSLATION_THRESHOLD_MB", "10"))
     TRANSLATION_LOCAL: bool = os.getenv("TRANSLATION_LOCAL", "True").lower() == "true"
     
-    # JWT Auth
     SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
     
-    # RBAC Levels
     RBAC_LEVELS: List[str] = ["admin", "manager", "analyst"]
     
-    # CORS
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
     # CORS_ORIGINS: List[str] = ["http://nodejsapp.enter-mnemon.com/", "http://localhost:3000"]
     
-    # Text Processing
     CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "2000"))
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "100"))
     
-    # Embedding Model
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "embeddinggemma:latest")
     EMBEDDING_LLM_HOST: str = os.getenv("EMBEDDING_LLM_HOST", "localhost")
     EMBEDDING_LLM_PORT: int = int(os.getenv("EMBEDDING_LLM_PORT", "11434"))
     
-    # Google AI SDK (Gemini/Gemma via google-generativeai)
-    # Updated to use gemini-2.0-flash for better performance and cost efficiency
     GOOGLE_CHAT_MODEL: str = os.getenv("GOOGLE_CHAT_MODEL", "gemini-2.0-flash-exp")
     GOOGLE_AGENT_REFERENCE_PATHS_RAW: str = os.getenv("GOOGLE_AGENT_REFERENCE_PATHS", "")
     

@@ -45,3 +45,6 @@ venv/
 __pycache__/
 
 backend/venv/
+
+.ipynb_checkpoints/
+.local_gcs/

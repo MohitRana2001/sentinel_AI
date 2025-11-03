@@ -1,8 +1,3 @@
-"""
-Graph Processor Service
-Listens to Redis Pub/Sub for graph building jobs
-Uses the existing graph_builer.py logic
-"""
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,7 +8,6 @@ from config import settings
 from database import SessionLocal
 import models
 
-# Import from graph_builer.py (unified approach for Gemini/Ollama)
 from graph_builer import graph, llm, llm_transformer, LLMGraphTransformer
 from langchain_core.documents import Document
 import traceback
@@ -30,21 +24,18 @@ def _canonical(value: str) -> str:
 
 
 class GraphProcessorService:
-    """Service for building knowledge graphs - Works with both Gemini (dev) and Ollama (prod)"""
     
     def __init__(self):
-        # Use the pre-initialized transformer from graph_builer.py
-        # This already handles Gemini (dev) vs Ollama (prod) selection
         if llm_transformer is not None:
             self.llm_transformer = llm_transformer
-            print("✅ Using LLMGraphTransformer (initialized in graph_builer.py)")
+            print("Using LLMGraphTransformer (initialized in graph_builer.py)")
         else:
-            print("❌ LLM Transformer unavailable - graph building will fail")
+            print("LLM Transformer unavailable - graph building will fail")
             self.llm_transformer = None
         
         if graph is None:
-            print("⚠️  Neo4j not connected - graph persistence disabled")
-            print("💡 Check NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD in .env")
+            print("Neo4j not connected - graph persistence disabled")
+            print("Check NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD in .env")
     
     def process_job(self, message: dict):
         """

@@ -1,8 +1,3 @@
-"""
-Graph Processor Service
-Listens to Redis Pub/Sub for graph building jobs
-Uses the existing graph_builer.py logic
-"""
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,13 +8,13 @@ from config import settings
 from database import SessionLocal
 import models
 
-# Import from existing graph_builer.py (now with graceful fallbacks)
-from graph_builer import graph, llm, LLMGraphTransformer
+from graph_builer import graph, llm, llm_transformer, LLMGraphTransformer
 from langchain_core.documents import Document
 import traceback
 from collections import defaultdict
 import unicodedata
 import re
+from datetime import datetime, timezone
 
 
 def _canonical(value: str) -> str:
@@ -29,30 +24,18 @@ def _canonical(value: str) -> str:
 
 
 class GraphProcessorService:
-    """Service for building knowledge graphs"""
     
     def __init__(self):
-        # Force use of REAL LLMGraphTransformer if available
-        if llm is not None:
-            try:
-                from langchain_experimental.graph_transformers import LLMGraphTransformer as RealTransformer
-                self.llm_transformer = RealTransformer(llm=llm)
-                print("✅ Using REAL LLMGraphTransformer with LLM-based extraction")
-            except ImportError as e:
-                print(f"⚠️  langchain_experimental not installed: {e}")
-                print("💡 Run: pip install langchain-experimental")
-                # Fall back to the hybrid transformer from graph_builer.py
-                self.llm_transformer = LLMGraphTransformer(llm=llm)
-            except Exception as e:
-                print(f"⚠️  Could not load LLMGraphTransformer: {e}")
-                self.llm_transformer = LLMGraphTransformer(llm=llm)
+        if llm_transformer is not None:
+            self.llm_transformer = llm_transformer
+            print("Using LLMGraphTransformer (initialized in graph_builer.py)")
         else:
-            print("ℹ️  Graph LLM unavailable; using heuristic entity extraction.")
-            self.llm_transformer = LLMGraphTransformer(llm=llm)
+            print("LLM Transformer unavailable - graph building will fail")
+            self.llm_transformer = None
         
         if graph is None:
-            print("⚠️  Neo4j graph persistence disabled (not connected).")
-            print("💡 Check NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD in .env.local")
+            print("Neo4j not connected - graph persistence disabled")
+            print("Check NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD in .env")
     
     def process_job(self, message: dict):
         """
@@ -205,6 +188,26 @@ class GraphProcessorService:
             
             print(f"✅ Graph building completed for document {document_id}")
             
+            # Check if this was the last document to be processed for this job
+            job = db.query(models.ProcessingJob).filter(models.ProcessingJob.id == job_id).first()
+            if job:
+                # Count how many documents have been fully processed (have graph entities)
+                documents_with_graphs = db.query(models.Document).join(
+                    models.GraphEntity,
+                    models.Document.id == models.GraphEntity.document_id
+                ).filter(
+                    models.Document.job_id == job_id
+                ).distinct().count()
+                
+                print(f"📊 Job {job_id}: {documents_with_graphs}/{job.total_files} documents have graphs")
+                
+                # If all files have been graph-processed, mark job as completed
+                if documents_with_graphs >= job.total_files:
+                    job.status = models.JobStatus.COMPLETED
+                    job.completed_at = datetime.now(timezone.utc)
+                    db.commit()
+                    print(f"✅ Job {job_id} marked as COMPLETED")
+            
         except Exception as e:
             print(f"❌ Error in graph processor: {e}")
             traceback.print_exc()
@@ -265,8 +268,6 @@ class GraphProcessorService:
             ON CREATE SET 
                 d.job_id = $job_id,
                 d.filename = $filename,
-                d.rbac_level = $rbac_level,
-                d.station_id = $station_id,
                 d.created_at = datetime()
             SET d.updated_at = datetime()
             """,
@@ -274,8 +275,6 @@ class GraphProcessorService:
                 "job_id": job_id,
                 "document_id": str(document.id),
                 "filename": document.original_filename,
-                "rbac_level": document.rbac_level.value if document.rbac_level else None,
-                "station_id": document.station_id,
             },
         )
         

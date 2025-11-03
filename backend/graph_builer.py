@@ -1,7 +1,3 @@
-"""
-Graph building utilities - Unified approach for both Gemini (dev) and Ollama (prod).
-Based on the working graph builder script.
-"""
 from __future__ import annotations
 
 import os
@@ -113,14 +109,13 @@ if llm is None and OLLAMA_AVAILABLE:
         llm = ChatOllama(model=GRAPH_LLM_MODEL, base_url=GRAPH_LLM_URL)
         if GRAPH_TRANSFORMER_AVAILABLE:
             llm_transformer = LLMGraphTransformer(llm=llm)
-            print(f"✅ Ollama graph transformer initialized with {GRAPH_LLM_MODEL}")
+            print(f"Ollama graph transformer initialized with {GRAPH_LLM_MODEL}")
     except Exception as exc:
-        print(f"❌ Could not initialize Ollama graph LLM: {exc}")
+        print(f"Could not initialize Ollama graph LLM: {exc}")
         llm = None
         llm_transformer = None
 
 
-# Export symbols for compatibility
 __all__ = [
     "graph",
     "llm",

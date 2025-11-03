@@ -178,8 +178,15 @@ class ApiClient {
     return response.json()
   }
 
-  async getJobGraph(jobId: string): Promise<GraphData> {
-    const response = await fetch(`${this.baseUrl}/jobs/${jobId}/graph`, {
+  async getJobGraph(jobId: string, documentIds?: number[]): Promise<GraphData> {
+    let url = `${this.baseUrl}/jobs/${jobId}/graph`
+    if (documentIds && documentIds.length > 0) {
+      const params = new URLSearchParams()
+      params.append("document_ids", documentIds.join(','))
+      url += `?${params.toString()}`
+    }
+
+    const response = await fetch(url, {
       headers: this.getAuthHeaders(),
     })
 
@@ -193,12 +200,14 @@ class ApiClient {
   async chat(
     message: string,
     jobId?: string,
-    documentId?: number,
+    documentIds?: number[],
   ): Promise<ChatResponse> {
     const params = new URLSearchParams()
     params.append("message", message)
     if (jobId) params.append("job_id", jobId)
-    if (documentId) params.append("document_id", documentId.toString())
+    if (documentIds && documentIds.length > 0) {
+      params.append("document_ids", documentIds.join(','))
+    }
 
     const url = `${this.baseUrl}/chat?${params.toString()}`
 

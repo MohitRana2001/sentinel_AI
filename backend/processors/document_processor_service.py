@@ -23,17 +23,97 @@ class DocumentProcessorService:
     
     def process_job(self, message: dict):
         """
-        Message format:
+        Process documents for a job
+        
+        Message format (NEW - per-file):
+        {
+            "job_id": "uuid",
+            "gcs_path": "uploads/job-uuid/file.pdf",
+            "filename": "file.pdf",
+            "action": "process_file"
+        }
+        
+        Message format (OLD - per-job, for backward compatibility):
         {
             "job_id": "uuid",
             "gcs_prefix": "uploads/job-uuid/",
             "action": "process"
         }
         """
+        action = message.get("action", "process")
+        job_id = message.get("job_id")
+        
+        # Route to appropriate handler based on action
+        if action == "process_file":
+            # NEW: Process single file (parallel processing)
+            self._process_single_file(message)
+        else:
+            # OLD: Process all files in job (sequential, backward compatibility)
+            self._process_job_legacy(message)
+    
+    def _process_single_file(self, message: dict):
+        """
+        Process a single file (NEW parallel processing approach)
+        Includes distributed locking to prevent duplicate processing
+        """
+        job_id = message.get("job_id")
+        gcs_path = message.get("gcs_path")
+        filename = message.get("filename")
+        
+        print(f"📄 Document Processor received file: {filename} (job: {job_id})")
+        
+        db = SessionLocal()
+        try:
+            # Get job from database
+            job = db.query(models.ProcessingJob).filter(
+                models.ProcessingJob.id == job_id
+            ).first()
+            
+            if not job:
+                print(f"❌ Job {job_id} not found")
+                return
+            
+            # Update job status to PROCESSING if it's still QUEUED
+            if job.status == models.JobStatus.QUEUED:
+                job.status = models.JobStatus.PROCESSING
+                job.started_at = datetime.now(timezone.utc)
+                db.commit()
+            
+            # Check if this file has already been processed (distributed lock)
+            # Try to create document record - if it exists, another worker is handling it
+            existing_doc = db.query(models.Document).filter(
+                models.Document.job_id == job.id,
+                models.Document.original_filename == filename
+            ).first()
+            
+            if existing_doc and existing_doc.summary_path:
+                # File already processed by another worker
+                print(f"⏭️  File {filename} already processed by another worker, skipping")
+                return
+            
+            # Process this file
+            self.process_document(db, job, gcs_path)
+            
+            # Check if all files in the job have been processed
+            self._check_job_completion(db, job)
+            
+            print(f"✅ Completed processing: {filename}")
+            
+        except Exception as e:
+            print(f"❌ Error processing file {filename}: {e}")
+            traceback.print_exc()
+            # Don't mark job as failed for single file errors
+        finally:
+            db.close()
+    
+    def _process_job_legacy(self, message: dict):
+        """
+        Process all files in a job sequentially (OLD approach for backward compatibility)
+        """
         job_id = message.get("job_id")
         gcs_prefix = message.get("gcs_prefix")
         
-        print(f"📄 Document Processor received job: {job_id}")
+        print(f"📄 Document Processor received job (legacy): {job_id}")
         
         db = SessionLocal()
         try:
@@ -65,14 +145,8 @@ class DocumentProcessorService:
             
             print(f"Document processing completed for job {job_id}")
             
-            if len(document_files) == job.total_files:
-                job.status = models.JobStatus.COMPLETED
-                job.completed_at = datetime.now(timezone.utc)
-            elif len(document_files) > 0:
-                job.status = models.JobStatus.PROCESSING
-                job.started_at = job.started_at or datetime.now(timezone.utc)
-            
-            db.commit()
+            # Check if all files have been processed
+            self._check_job_completion(db, job)
             
         except Exception as e:
             print(f"Error in document processor: {e}")
@@ -83,6 +157,34 @@ class DocumentProcessorService:
                 db.commit()
         finally:
             db.close()
+    
+    def _check_job_completion(self, db, job):
+        """
+        Check if all files in the job have been processed
+        If yes, mark job as completed (only if no audio/video files pending)
+        """
+        # Count documents created for this job
+        documents_processed = db.query(models.Document).filter(
+            models.Document.job_id == job.id
+        ).count()
+        
+        print(f"📊 Job {job.id}: {documents_processed}/{job.total_files} files processed")
+        
+        # Only mark as completed if all files are done
+        # Note: This works for both document-only jobs and mixed jobs
+        # because audio/video processor will also call this check
+        if documents_processed >= job.total_files:
+            if job.status != models.JobStatus.COMPLETED:
+                job.status = models.JobStatus.COMPLETED
+                job.completed_at = datetime.now(timezone.utc)
+                db.commit()
+                print(f"✅ Job {job.id} marked as COMPLETED")
+        elif documents_processed > 0:
+            # Some files processed, ensure status is PROCESSING
+            if job.status == models.JobStatus.QUEUED:
+                job.status = models.JobStatus.PROCESSING
+                job.started_at = job.started_at or datetime.now(timezone.utc)
+                db.commit()
     
     def process_document(self, db, job, gcs_path: str):
         print(f"🔄 Processing: {gcs_path}")
@@ -205,8 +307,9 @@ class DocumentProcessorService:
             db.commit()
             vectorise_and_store_alloydb(db, document.id, final_text, summary)
             
-            print(f"Queuing for graph processing...")
-            redis_pubsub.publish(settings.REDIS_CHANNEL_GRAPH, {
+            # Step 5: Push to graph processor queue
+            print(f"📊 Queuing for graph processing...")
+            redis_pubsub.push_to_queue(settings.REDIS_QUEUE_GRAPH, {
                 "job_id": job.id,
                 "document_id": document.id,
                 "gcs_text_path": translated_text_path or extracted_text_path
@@ -225,13 +328,15 @@ class DocumentProcessorService:
 
 def main():
     """Main entry point"""
-    print("Starting Document Processor Service...")
-    print(f"Listening to channel: {settings.REDIS_CHANNEL_DOCUMENT}")
+    print("🚀 Starting Document Processor Service...")
+    print(f"📡 Using Redis Queue for true parallel processing")
+    print(f"👂 Listening to queue: {settings.REDIS_QUEUE_DOCUMENT}")
     
     service = DocumentProcessorService()
     
-    redis_pubsub.listen(
-        channel=settings.REDIS_CHANNEL_DOCUMENT,
+    # Listen to Redis queue (each worker gets different messages)
+    redis_pubsub.listen_queue(
+        queue_name=settings.REDIS_QUEUE_DOCUMENT,
         callback=service.process_job
     )
 

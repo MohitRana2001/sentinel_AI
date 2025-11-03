@@ -7,6 +7,7 @@ import { apiClient } from "@/lib/api-client";
 
 interface GraphVisualizationProps {
   jobId: string;
+  selectedDocumentIds?: number[];
 }
 
 interface GraphNode {
@@ -23,7 +24,7 @@ interface GraphLink {
   properties?: Record<string, any>;
 }
 
-export function GraphVisualization({ jobId }: GraphVisualizationProps) {
+export function GraphVisualization({ jobId, selectedDocumentIds }: GraphVisualizationProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +37,7 @@ export function GraphVisualization({ jobId }: GraphVisualizationProps) {
     const fetchGraphData = async () => {
       try {
         setLoading(true);
-        const data = await apiClient.getJobGraph(jobId);
+        const data = await apiClient.getJobGraph(jobId, selectedDocumentIds);
         setGraphData({
           nodes: data.nodes,
           links: data.relationships,
@@ -51,7 +52,7 @@ export function GraphVisualization({ jobId }: GraphVisualizationProps) {
     };
 
     fetchGraphData();
-  }, [jobId]);
+  }, [jobId, selectedDocumentIds]);
 
   useEffect(() => {
     if (!graphData || !svgRef.current) return;

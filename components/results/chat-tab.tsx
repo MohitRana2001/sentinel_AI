@@ -7,10 +7,13 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { apiClient } from "@/lib/api-client";
 import type { ChatMessage, ChatSource } from "@/types";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface ChatTabProps {
   jobId: string;
   documents: { id: number; fileName: string }[];
+  selectedDocumentIds: number[];
 }
 
 const formatTime = (isoString: string) =>
@@ -19,12 +22,31 @@ const formatTime = (isoString: string) =>
     minute: "2-digit",
   });
 
-export function ChatTab({ jobId, documents }: ChatTabProps) {
+export function ChatTab({
+  jobId,
+  documents,
+  selectedDocumentIds,
+}: ChatTabProps) {
+  // Get selected document names
+  const selectedDocs = documents.filter((d) =>
+    selectedDocumentIds.includes(d.id)
+  );
+  const docNames =
+    selectedDocs.length > 0
+      ? selectedDocs.map((d) => d.fileName).join(", ")
+      : "all documents";
+
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "intro",
       sender: "ai",
-      content: `Hello! I'm your Sentinel AI assistant, powered by Google Gemini. I'm ready to answer questions about your uploaded documents. Feel free to ask about summaries, translations, specific details, or relationships between documents.`,
+      content: `Hello! I'm your Sentinel AI assistant. I'm ready to answer questions about ${
+        selectedDocs.length > 0
+          ? `the selected document${
+              selectedDocs.length > 1 ? "s" : ""
+            }: **${docNames}**`
+          : "your uploaded documents"
+      }. Feel free to ask about summaries, translations, specific details, or relationships between documents.`,
       timestamp: new Date().toISOString(),
       mode: "gemini-2.0-flash",
     },
@@ -43,6 +65,11 @@ export function ChatTab({ jobId, documents }: ChatTabProps) {
       return;
     }
 
+    if (selectedDocumentIds.length === 0) {
+      setError("Please select at least one document to chat with.");
+      return;
+    }
+
     const content = inputValue.trim();
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
@@ -57,7 +84,11 @@ export function ChatTab({ jobId, documents }: ChatTabProps) {
     setError(null);
 
     try {
-      const response = await apiClient.chat(content, jobId, undefined);
+      const response = await apiClient.chat(
+        content,
+        jobId,
+        selectedDocumentIds.length > 0 ? selectedDocumentIds : undefined
+      );
 
       // Log response for debugging
       console.log("Chat response received:", {
@@ -144,6 +175,22 @@ export function ChatTab({ jobId, documents }: ChatTabProps) {
 
   return (
     <div className="flex flex-col h-full">
+      {selectedDocs.length > 0 && (
+        <Card className="p-3 mb-4 bg-blue-50 border-blue-200">
+          <p className="text-sm text-blue-900">
+            <strong>Chatting with:</strong> {docNames}
+          </p>
+        </Card>
+      )}
+
+      {selectedDocs.length === 0 && (
+        <Card className="p-3 mb-4 bg-amber-50 border-amber-200">
+          <p className="text-sm text-amber-900">
+            <strong>No documents selected.</strong> Please select at least one
+            document from above to start chatting.
+          </p>
+        </Card>
+      )}
       <div className="flex-1 overflow-y-auto space-y-4 p-4 bg-gradient-to-br from-blue-50/80 via-sky-50/60 to-blue-100/60 rounded-xl border border-blue-100 shadow-inner mb-4">
         {messages.map((message) => (
           <div
@@ -161,9 +208,48 @@ export function ChatTab({ jobId, documents }: ChatTabProps) {
                   : "bg-blue-100/90 border border-blue-200 text-slate-800"
               }`}
             >
-              <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                {message.content}
-              </p>
+              {message.sender === "user" ? (
+                <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                  {message.content}
+                </p>
+              ) : (
+                <div
+                  className={`prose prose-sm max-w-none ${
+                    message.sender === "ai" ? "prose-slate" : ""
+                  }`}
+                >
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      code: ({
+                        node,
+                        inline,
+                        className,
+                        children,
+                        ...props
+                      }) => {
+                        return inline ? (
+                          <code
+                            className="bg-slate-200 px-1 rounded text-slate-800"
+                            {...props}
+                          >
+                            {children}
+                          </code>
+                        ) : (
+                          <code
+                            className="block bg-slate-900 text-white p-3 rounded overflow-x-auto text-xs"
+                            {...props}
+                          >
+                            {children}
+                          </code>
+                        );
+                      },
+                    }}
+                  >
+                    {message.content}
+                  </ReactMarkdown>
+                </div>
+              )}
               {message.sources && renderSources(message.sources)}
               <p
                 className={`text-[11px] mt-2 uppercase tracking-wide ${

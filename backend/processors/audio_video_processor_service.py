@@ -23,17 +23,94 @@ class AudioVideoProcessorService:
         """
         Process audio/video files for a job
         
-        Message format:
+        Message format (NEW - per-file):
+        {
+            "job_id": "uuid",
+            "gcs_path": "uploads/job-uuid/audio.mp3",
+            "filename": "audio.mp3",
+            "action": "process_file"
+        }
+        
+        Message format (OLD - per-job, for backward compatibility):
         {
             "job_id": "uuid",
             "gcs_prefix": "uploads/job-uuid/",
             "action": "process"
         }
         """
+        action = message.get("action", "process")
+        job_id = message.get("job_id")
+        
+        # Route to appropriate handler based on action
+        if action == "process_file":
+            # NEW: Process single file (parallel processing)
+            self._process_single_file(message)
+        else:
+            # OLD: Process all files in job (sequential, backward compatibility)
+            self._process_job_legacy(message)
+    
+    def _process_single_file(self, message: dict):
+        """
+        Process a single media file (NEW parallel processing approach)
+        Includes distributed locking to prevent duplicate processing
+        """
+        job_id = message.get("job_id")
+        gcs_path = message.get("gcs_path")
+        filename = message.get("filename")
+        
+        print(f"🎬 Audio/Video Processor received file: {filename} (job: {job_id})")
+        
+        db = SessionLocal()
+        try:
+            # Get job from database
+            job = db.query(models.ProcessingJob).filter(
+                models.ProcessingJob.id == job_id
+            ).first()
+            
+            if not job:
+                print(f"❌ Job {job_id} not found")
+                return
+            
+            # Update job status to PROCESSING if it's still QUEUED
+            if job.status == models.JobStatus.QUEUED:
+                job.status = models.JobStatus.PROCESSING
+                job.started_at = datetime.now(timezone.utc)
+                db.commit()
+            
+            # Check if this file has already been processed (distributed lock)
+            existing_doc = db.query(models.Document).filter(
+                models.Document.job_id == job.id,
+                models.Document.original_filename == filename
+            ).first()
+            
+            if existing_doc and existing_doc.summary_path:
+                # File already processed by another worker
+                print(f"⏭️  File {filename} already processed by another worker, skipping")
+                return
+            
+            # Process this file
+            self.process_media(db, job, gcs_path)
+            
+            # Check if all files in the job have been processed
+            self._check_job_completion(db, job)
+            
+            print(f"✅ Completed processing: {filename}")
+            
+        except Exception as e:
+            print(f"❌ Error processing file {filename}: {e}")
+            traceback.print_exc()
+            # Don't mark job as failed for single file errors
+        finally:
+            db.close()
+    
+    def _process_job_legacy(self, message: dict):
+        """
+        Process all media files in a job sequentially (OLD approach for backward compatibility)
+        """
         job_id = message.get("job_id")
         gcs_prefix = message.get("gcs_prefix")
         
-        print(f"🎬 Audio/Video Processor received job: {job_id}")
+        print(f"🎬 Audio/Video Processor received job (legacy): {job_id}")
         
         db = SessionLocal()
         try:
@@ -63,19 +140,40 @@ class AudioVideoProcessorService:
             
             print(f"✅ Media processing completed for job {job_id}")
             
-            # Check if all files have been processed and mark job as completed
-            db.refresh(job)  # Reload job from database to get latest counts
-            if job.processed_files >= job.total_files:
-                job.status = models.JobStatus.COMPLETED
-                job.completed_at = datetime.now(timezone.utc)
-                db.commit()
-                print(f"Job {job_id} marked as COMPLETED ({job.processed_files}/{job.total_files} files processed)")
+            # Check if all files have been processed
+            self._check_job_completion(db, job)
             
         except Exception as e:
             print(f"Error in audio/video processor: {e}")
             traceback.print_exc()
         finally:
             db.close()
+    
+    def _check_job_completion(self, db, job):
+        """
+        Check if all files in the job have been processed
+        If yes, mark job as completed
+        """
+        # Count documents created for this job
+        documents_processed = db.query(models.Document).filter(
+            models.Document.job_id == job.id
+        ).count()
+        
+        print(f"📊 Job {job.id}: {documents_processed}/{job.total_files} files processed")
+        
+        # Only mark as completed if all files are done
+        if documents_processed >= job.total_files:
+            if job.status != models.JobStatus.COMPLETED:
+                job.status = models.JobStatus.COMPLETED
+                job.completed_at = datetime.now(timezone.utc)
+                db.commit()
+                print(f"✅ Job {job.id} marked as COMPLETED")
+        elif documents_processed > 0:
+            # Some files processed, ensure status is PROCESSING
+            if job.status == models.JobStatus.QUEUED:
+                job.status = models.JobStatus.PROCESSING
+                job.started_at = job.started_at or datetime.now(timezone.utc)
+                db.commit()
     
     def process_media(self, db, job, gcs_path: str):
         """
@@ -194,9 +292,9 @@ class AudioVideoProcessorService:
         except Exception as e:
             print(f"⚠️ Vectorization failed: {e}")
         
-        # Step 6: Queue for graph processing
+        # Step 6: Push to graph processor queue
         print(f"📊 Queuing for graph processing...")
-        redis_pubsub.publish(settings.REDIS_CHANNEL_GRAPH, {
+        redis_pubsub.push_to_queue(settings.REDIS_QUEUE_GRAPH, {
             "job_id": job.id,
             "document_id": document.id,
             "gcs_text_path": translated_text_path or transcription_path
@@ -304,18 +402,24 @@ Summary:"""
 def main():
     """Main entry point"""
     print("🚀 Starting Audio/Video Processor Service...")
-    print(f"📡 Listening to channels: {settings.REDIS_CHANNEL_AUDIO}, {settings.REDIS_CHANNEL_VIDEO}")
+    print(f"📡 Using Redis Queues for true parallel processing")
+    print(f"👂 Listening to queues: {settings.REDIS_QUEUE_AUDIO}, {settings.REDIS_QUEUE_VIDEO}")
     
     service = AudioVideoProcessorService()
     
-    # Listen to both audio and video channels
-    redis_pubsub.listen_async(
-        channel=settings.REDIS_CHANNEL_AUDIO,
-        callback=service.process_job
+    # Listen to both audio and video queues
+    # Audio queue in background thread
+    import threading
+    audio_thread = threading.Thread(
+        target=redis_pubsub.listen_queue,
+        args=(settings.REDIS_QUEUE_AUDIO, service.process_job),
+        daemon=True
     )
+    audio_thread.start()
     
-    redis_pubsub.listen(
-        channel=settings.REDIS_CHANNEL_VIDEO,
+    # Video queue in main thread (blocking)
+    redis_pubsub.listen_queue(
+        queue_name=settings.REDIS_QUEUE_VIDEO,
         callback=service.process_job
     )
 

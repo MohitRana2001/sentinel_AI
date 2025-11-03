@@ -56,11 +56,17 @@ class Settings(BaseSettings):
     REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
     REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "")
     
-    # Redis Pub/Sub Channels
+    # Redis Pub/Sub Channels (legacy - for backward compatibility)
     REDIS_CHANNEL_DOCUMENT: str = "document_processor"
     REDIS_CHANNEL_AUDIO: str = "audio_processor"
     REDIS_CHANNEL_VIDEO: str = "video_processor"
     REDIS_CHANNEL_GRAPH: str = "graph_processor"
+    
+    # Redis Queues (for parallel processing with work distribution)
+    REDIS_QUEUE_DOCUMENT: str = "document_queue"
+    REDIS_QUEUE_AUDIO: str = "audio_queue"
+    REDIS_QUEUE_VIDEO: str = "video_queue"
+    REDIS_QUEUE_GRAPH: str = "graph_queue"
     
     # AlloyDB Configuration
     ALLOYDB_HOST: str = os.getenv("ALLOYDB_HOST", "localhost")

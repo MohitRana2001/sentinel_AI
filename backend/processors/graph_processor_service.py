@@ -48,32 +48,44 @@ class GraphProcessorService:
             "gcs_text_path": "path/to/text.txt"
         }
         """
+        import time
+        job_start_time = time.time()
+        
         job_id = message.get("job_id")
         document_id = message.get("document_id")
         gcs_text_path = message.get("gcs_text_path")
         
         print(f"📊 Graph Processor received job for document: {document_id}")
+        print(f"⏱️  Starting graph processing at {time.strftime('%H:%M:%S')}")
         
         db = SessionLocal()
         try:
             # Download text from GCS
             text = gcs_storage.download_text(gcs_text_path)
             
-            # Limit text size for graph extraction
-            max_chars = 10000
+            # Limit text size for graph extraction (reduced for better performance)
+            # Ollama is much slower than Gemini, so we use a smaller chunk
+            max_chars = 5000  # Reduced from 10000 for faster processing
             if len(text) > max_chars:
                 text = text[:max_chars]
                 print(f"📏 Text truncated to {max_chars} chars for graph extraction")
             
             # Build graph using existing logic
-            print(f"🔗 Extracting entities and relationships...")
+            print(f"🔗 Extracting entities and relationships (this may take 30-60 seconds with Ollama)...")
+            
+            import time
+            start_time = time.time()
             
             documents = [Document(page_content=text, metadata={
                 "job_id": job_id,
                 "document_id": document_id
             })]
             
+            print(f"⏱️  Calling LLM for entity extraction...")
             graph_documents = self.llm_transformer.convert_to_graph_documents(documents)
+            
+            extraction_time = time.time() - start_time
+            print(f"⏱️  Entity extraction took {extraction_time:.2f} seconds")
             
             if not graph_documents:
                 print(f"⚠️  No graph documents generated")
@@ -186,7 +198,9 @@ class GraphProcessorService:
                 
                 db.commit()
             
+            total_time = time.time() - job_start_time
             print(f"✅ Graph building completed for document {document_id}")
+            print(f"⏱️  Total graph processing time: {total_time:.2f} seconds")
             
             # Check if this was the last document to be processed for this job
             job = db.query(models.ProcessingJob).filter(models.ProcessingJob.id == job_id).first()
@@ -207,6 +221,7 @@ class GraphProcessorService:
                     job.completed_at = datetime.now(timezone.utc)
                     db.commit()
                     print(f"✅ Job {job_id} marked as COMPLETED")
+                    print(f"⏱️  Job completion latency from graph start: {total_time:.2f} seconds")
             
         except Exception as e:
             print(f"❌ Error in graph processor: {e}")
@@ -332,13 +347,14 @@ class GraphProcessorService:
 def main():
     """Main entry point"""
     print("🚀 Starting Graph Processor Service...")
-    print(f"📡 Listening to channel: {settings.REDIS_CHANNEL_GRAPH}")
+    print(f"📡 Using Redis Queue for true parallel processing")
+    print(f"👂 Listening to queue: {settings.REDIS_QUEUE_GRAPH}")
     
     service = GraphProcessorService()
     
-    # Listen to Redis channel
-    redis_pubsub.listen(
-        channel=settings.REDIS_CHANNEL_GRAPH,
+    # Listen to Redis queue (each worker gets different messages)
+    redis_pubsub.listen_queue(
+        queue_name=settings.REDIS_QUEUE_GRAPH,
         callback=service.process_job
     )
 

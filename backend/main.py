@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Depends, HTTPException
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from sqlalchemy.orm import Session
@@ -698,14 +698,23 @@ async def upload_documents(
     db.commit()
     db.refresh(job)
     
-    redis_pubsub.publish_job(job_id, gcs_prefix, settings.REDIS_CHANNEL_DOCUMENT)
+    # Push per-file messages to Redis queues for true parallel processing
+    # Each file gets its own message in a queue, distributed to available workers
+    messages_queued = 0
+    for filename, file_type in zip(filenames, file_types):
+        gcs_path = f"{gcs_prefix}{filename}"
+        
+        if file_type == 'document':
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_DOCUMENT)
+            messages_queued += 1
+        elif file_type == 'audio':
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_AUDIO)
+            messages_queued += 1
+        elif file_type == 'video':
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO)
+            messages_queued += 1
     
-    if 'audio' in file_types:
-        redis_pubsub.publish_job(job_id, gcs_prefix, settings.REDIS_CHANNEL_AUDIO)
-    if 'video' in file_types:
-        redis_pubsub.publish_job(job_id, gcs_prefix, settings.REDIS_CHANNEL_VIDEO)
-    
-    print(f"Job {job_id} created and queued for processing")
+    print(f"Job {job_id} created and queued for processing ({messages_queued} messages in queue)")
     
     return {
         "job_id": job_id,
@@ -930,10 +939,11 @@ async def get_document_translation(
 @app.get(f"{settings.API_PREFIX}/jobs/{{job_id:path}}/graph")
 async def get_job_graph(
     job_id: str,
+    document_ids: Optional[str] = Query(None),  # comma-separated document IDs
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Get combined knowledge graph from Neo4j for all documents in a job"""
+    """Get combined knowledge graph from Neo4j for all documents in a job (or selected documents)"""
     
     # 1. Check if job exists and user has access (from SQL)
     job = db.query(models.ProcessingJob).filter(
@@ -949,10 +959,24 @@ async def get_job_graph(
     if not graph:
         raise HTTPException(500, "Graph database is not connected")
 
-    # 2. Get all document IDs for this job (from SQL)
-    doc_ids = db.query(models.Document.id).filter(
-        models.Document.job_id == job_id
-    ).all()
+    # 2. Get document IDs - either selected ones or all for this job
+    if document_ids:
+        # Parse selected document IDs
+        try:
+            selected_ids = [int(id.strip()) for id in document_ids.split(',') if id.strip()]
+        except ValueError:
+            raise HTTPException(400, "Invalid document_ids format")
+        
+        # Verify these documents belong to the job and user has access
+        doc_ids = db.query(models.Document.id).filter(
+            models.Document.job_id == job_id,
+            models.Document.id.in_(selected_ids)
+        ).all()
+    else:
+        # Get all documents for this job
+        doc_ids = db.query(models.Document.id).filter(
+            models.Document.job_id == job_id
+        ).all()
     
     # Convert list of tuples to list of strings
     document_ids_list = [str(doc_id[0]) for doc_id in doc_ids]
@@ -1026,7 +1050,7 @@ async def get_job_graph(
 async def chat_with_documents(
     message: str,
     job_id: Optional[str] = None,
-    document_id: Optional[int] = None,
+    document_ids: Optional[str] = None,  # comma-separated document IDs
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
@@ -1036,6 +1060,14 @@ async def chat_with_documents(
     
     vector_store = VectorStore(db)
     
+    # Parse document IDs if provided
+    doc_id_list = None
+    if document_ids:
+        try:
+            doc_id_list = [int(id.strip()) for id in document_ids.split(',') if id.strip()]
+        except ValueError:
+            raise HTTPException(400, "Invalid document_ids format")
+    
     try:
         if job_id:
             job = db.query(models.ProcessingJob).filter(models.ProcessingJob.id == job_id).first()
@@ -1044,19 +1076,19 @@ async def chat_with_documents(
             if not user_has_job_access(current_user, job):
                 raise HTTPException(status_code=403, detail="Insufficient permissions for this job")
 
-        if document_id:
-            document = db.query(models.Document).filter(models.Document.id == document_id).first()
-            if not document:
-                raise HTTPException(404, "Document not found")
-            if not user_has_document_access(current_user, document):
-                raise HTTPException(status_code=403, detail="Insufficient permissions for this document")
-            if not job_id:
-                job_id = document.job_id
+        # Verify access to selected documents if specified
+        if doc_id_list:
+            for doc_id in doc_id_list:
+                document = db.query(models.Document).filter(models.Document.id == doc_id).first()
+                if not document:
+                    raise HTTPException(404, f"Document {doc_id} not found")
+                if not user_has_document_access(current_user, document):
+                    raise HTTPException(status_code=403, detail=f"Insufficient permissions for document {doc_id}")
 
         results = vector_store.similarity_search(
             query=message,
             k=8,
-            document_id=document_id,
+            document_ids=doc_id_list,
             job_id=job_id,
             user=current_user
         )
@@ -1084,7 +1116,7 @@ async def chat_with_documents(
                     chunks=enriched_chunks,
                     metadata={
                         "job_id": job_id or "N/A",
-                        "document_id": str(document_id) if document_id else "N/A",
+                        "document_ids": document_ids if document_ids else "N/A",
                     },
                     include_static_refs=False
                 )

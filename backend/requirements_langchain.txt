@@ -1,0 +1,23 @@
+# Compatible LangChain versions for LLMGraphTransformer
+# Install these to fix "AttributeError: 'NoneType' object has no attribute 'convert_to_graph_documents'"
+
+# Core LangChain (must be 0.3.x series for compatibility)
+langchain-core==0.3.21
+langchain-community==0.3.7
+langchain-experimental==0.3.3
+langchain-text-splitters==0.3.2
+
+# LLM integrations
+langchain-ollama==0.2.0
+langchain-google-genai==2.0.5
+langchain-neo4j==0.2.3
+
+# Installation command (run from backend directory with venv activated):
+# pip install -r requirements_langchain.txt
+
+# Or install individually:
+# pip install langchain-core==0.3.21 langchain-community==0.3.7 langchain-experimental==0.3.3 langchain-text-splitters==0.3.2 langchain-ollama==0.2.0 langchain-google-genai==2.0.5 langchain-neo4j==0.2.3
+
+# Note: If you get SSL certificate errors, try:
+# pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements_langchain.txt
+

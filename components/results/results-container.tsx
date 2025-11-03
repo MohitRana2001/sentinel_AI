@@ -9,7 +9,7 @@ import { SummaryTab } from "./summary-tab";
 import { TranscriptionTab } from "./transcription-tab";
 import { TranslationTab } from "./translation-tab";
 import { GraphVisualization } from "./graph-visualization";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Check } from "lucide-react";
 
 interface ResultsContainerProps {
   result: AnalysisResult;
@@ -25,25 +25,30 @@ export function ResultsContainer({
   jobId,
 }: ResultsContainerProps) {
   const [activeTab, setActiveTab] = useState<TabType>("summary");
-  const [activeDocumentId, setActiveDocumentId] = useState<number>(
-    result.documents[0]?.id ?? 0
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<number[]>([
+    result.documents[0]?.id ?? 0,
+  ]);
+
+  // Get selected documents for rendering
+  const selectedDocuments = result.documents.filter((doc) =>
+    selectedDocumentIds.includes(doc.id)
   );
 
-  const activeDocument =
-    result.documents.find((doc) => doc.id === activeDocumentId) ??
-    result.documents[0];
+  // Check if any selected document has audio or needs translation
+  const hasAnyAudio = selectedDocuments.some((doc) => doc.hasAudio);
+  const hasAnyTranslation = selectedDocuments.some((doc) => doc.isNonEnglish);
 
   const tabs: Array<{ id: TabType; label: string; visible: boolean }> = [
     { id: "summary", label: "Summary", visible: true },
     {
       id: "transcription",
       label: "Transcription",
-      visible: activeDocument?.hasAudio ?? false,
+      visible: hasAnyAudio && selectedDocumentIds.length === 1,
     },
     {
       id: "translation",
       label: "Translation",
-      visible: activeDocument?.isNonEnglish ?? false,
+      visible: hasAnyTranslation && selectedDocumentIds.length === 1,
     },
     { id: "graph", label: "Knowledge Graph", visible: true },
     { id: "chat", label: "Chat", visible: true },
@@ -74,18 +79,40 @@ export function ResultsContainer({
 
         {/* Document selector */}
         <Card className="p-4 bg-white border border-slate-200">
+          <p className="text-sm text-slate-600 mb-3">
+            Click documents to select/unselect for viewing:
+          </p>
           <div className="flex flex-wrap gap-3">
             {result.documents.map((doc) => (
               <button
                 key={doc.id}
-                onClick={() => setActiveDocumentId(doc.id)}
-                className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  activeDocumentId === doc.id
-                    ? "bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow"
-                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                onClick={() => {
+                  setSelectedDocumentIds((prev) =>
+                    prev.includes(doc.id)
+                      ? prev.filter((id) => id !== doc.id)
+                      : [...prev, doc.id]
+                  );
+                }}
+                className={`px-4 py-2 rounded-lg border-2 transition-all ${
+                  selectedDocumentIds.includes(doc.id)
+                    ? "bg-blue-100 border-blue-500 shadow-md"
+                    : "bg-white border-slate-200 hover:border-slate-300"
                 }`}
               >
-                {doc.fileName}
+                <div className="flex items-center gap-2">
+                  {selectedDocumentIds.includes(doc.id) && (
+                    <Check className="h-4 w-4 text-blue-600" />
+                  )}
+                  <span
+                    className={
+                      selectedDocumentIds.includes(doc.id)
+                        ? "font-semibold"
+                        : ""
+                    }
+                  >
+                    {doc.fileName}
+                  </span>
+                </div>
               </button>
             ))}
           </div>
@@ -112,32 +139,34 @@ export function ResultsContainer({
           {/* Tab Content */}
           <div className="p-6">
             {activeTab === "summary" && (
-              <div className="space-y-6">
-                {result.documents.map((doc) => (
-                  <div key={doc.id} className="space-y-2">
-                    <h3 className="text-lg font-semibold text-slate-800">
-                      {doc.fileName}
-                    </h3>
-                    <SummaryTab summary={doc.summary} />
-                  </div>
-                ))}
-              </div>
+              <SummaryTab documents={selectedDocuments} />
             )}
 
-            {activeTab === "transcription" && activeDocument && (
+            {activeTab === "transcription" && selectedDocuments[0] && (
               <TranscriptionTab
-                transcription={activeDocument.transcription || ""}
+                transcription={selectedDocuments[0].transcription || ""}
               />
             )}
 
-            {activeTab === "translation" && activeDocument && (
-              <TranslationTab translation={activeDocument.translation || ""} />
+            {activeTab === "translation" && selectedDocuments[0] && (
+              <TranslationTab
+                translation={selectedDocuments[0].translation || ""}
+              />
             )}
 
-            {activeTab === "graph" && <GraphVisualization jobId={jobId} />}
+            {activeTab === "graph" && (
+              <GraphVisualization
+                jobId={jobId}
+                selectedDocumentIds={selectedDocumentIds}
+              />
+            )}
 
             {activeTab === "chat" && (
-              <ChatTab jobId={jobId} documents={result.documents} />
+              <ChatTab
+                jobId={jobId}
+                documents={result.documents}
+                selectedDocumentIds={selectedDocumentIds}
+              />
             )}
           </div>
         </Card>

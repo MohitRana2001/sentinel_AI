@@ -69,7 +69,7 @@ class VectorStore:
         self,
         query: str,
         k: int = 5,
-        document_id: int = None,
+        document_ids: List[int] = None,  # Changed from document_id to document_ids
         job_id: str = None,
         user: Optional[models.User] = None
     ) -> List[Dict[str, Any]]:
@@ -104,8 +104,9 @@ class VectorStore:
                 # Analyst can only access their own documents
                 query_obj = query_obj.filter(models.ProcessingJob.user_id == user.id)
     
-        if document_id:
-            query_obj = query_obj.filter(models.DocumentChunk.document_id == document_id)
+        # Filter by document IDs if specified
+        if document_ids:
+            query_obj = query_obj.filter(models.DocumentChunk.document_id.in_(document_ids))
     
         if job_id:
             query_obj = query_obj.filter(models.Document.job_id == job_id)

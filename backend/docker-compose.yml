@@ -1,0 +1,89 @@
+version: "3.8"
+
+services:
+  # Document processors (3 workers)
+  document-worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.document_processor
+    environment:
+      - REDIS_HOST=redis
+      - ALLOYDB_HOST=${ALLOYDB_HOST}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - SUMMARY_LLM_URL=http://ollama:11434
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  document-worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.document_processor
+    environment:
+      - REDIS_HOST=redis
+      - ALLOYDB_HOST=${ALLOYDB_HOST}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - SUMMARY_LLM_URL=http://ollama:11434
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  document-worker-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.document_processor
+    environment:
+      - REDIS_HOST=redis
+      - ALLOYDB_HOST=${ALLOYDB_HOST}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - SUMMARY_LLM_URL=http://ollama:11434
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Audio/Video processor
+  audio-video-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.audio_video_processor
+    environment:
+      - REDIS_HOST=redis
+      - ALLOYDB_HOST=${ALLOYDB_HOST}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Graph processors (2 workers)
+  graph-worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.graph_processor
+    environment:
+      - REDIS_HOST=redis
+      - ALLOYDB_HOST=${ALLOYDB_HOST}
+      - NEO4J_URI=${NEO4J_URI}
+      - GRAPH_LLM_URL=http://ollama:11435
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  graph-worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.graph_processor
+    environment:
+      - REDIS_HOST=redis
+      - ALLOYDB_HOST=${ALLOYDB_HOST}
+      - NEO4J_URI=${NEO4J_URI}
+      - GRAPH_LLM_URL=http://ollama:11435
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped

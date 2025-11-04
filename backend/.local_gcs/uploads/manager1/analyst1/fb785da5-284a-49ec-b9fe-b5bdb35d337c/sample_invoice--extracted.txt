@@ -1,0 +1,18 @@
+Sample Invoice Template
+    
+    Invoice Number: INV-SAMPLE-001
+    Date: 2024-01-15
+    
+    Bill To:
+    Your Finance Department
+    
+    From:
+    Sample Vendor Inc.
+    Vendor ID: VEND-123
+    
+    Items:
+    Software License x5 @ $200 = $1,000
+    
+    Total: $1,000
+    Payment Terms: Net 30
+    

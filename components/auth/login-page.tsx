@@ -1,5 +1,4 @@
 "use client"
-
 import type React from "react"
 import { useState } from "react"
 import { useAuth } from "@/context/auth-context"
@@ -9,70 +8,75 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 
 export function LoginPage() {
   const { login } = useAuth()
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
-  const [error, setError] = useState("")
+  const [error, setError] = useState<string>("")
   const [isLoading, setIsLoading] = useState(false)
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const [loginForm, setLoginForm] = useState({
+    email: "",
+    password: "",
+  })
+
+  const resetFeedback = () => {
     setError("")
-    setIsLoading(true)
-
-    // Simulate network delay
-    await new Promise((resolve) => setTimeout(resolve, 500))
-
-    if (!login(email, password)) {
-      setError("Invalid email or password")
-      setIsLoading(false)
-      return
-    }
-
-    setIsLoading(false)
   }
 
-  const handleDemoLogin = (demoEmail: string) => {
-    setEmail(demoEmail)
-    setPassword("password")
-    setError("")
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    resetFeedback()
+    setIsLoading(true)
+
+    try {
+      await login(loginForm.email, loginForm.password)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Request failed")
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100 p-4">
       <Card className="w-full max-w-md shadow-lg">
-        <CardHeader className="space-y-2">
-          <CardTitle className="text-2xl font-bold">Document Analysis AI</CardTitle>
-          <CardDescription>Sign in to your account to get started</CardDescription>
+        <CardHeader className="space-y-3">
+          <CardTitle className="text-2xl font-bold">
+            Sign in to Sentinel AI
+          </CardTitle>
+          <CardDescription>
+            Access intelligence dashboards and document workflows
+          </CardDescription>
         </CardHeader>
+
         <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form className="space-y-4" onSubmit={handleSubmit}>
             <div className="space-y-2">
-              <label htmlFor="email" className="text-sm font-medium">
+              <label htmlFor="login-email" className="text-sm font-medium">
                 Email
               </label>
               <Input
-                id="email"
+                id="login-email"
                 type="email"
-                placeholder="admin@test.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                disabled={isLoading}
+                value={loginForm.email}
+                onChange={(event) => setLoginForm((prev) => ({ ...prev, email: event.target.value }))}
+                placeholder="you@example.com"
+                autoComplete="email"
                 required
+                disabled={isLoading}
               />
             </div>
 
             <div className="space-y-2">
-              <label htmlFor="password" className="text-sm font-medium">
+              <label htmlFor="login-password" className="text-sm font-medium">
                 Password
               </label>
               <Input
-                id="password"
+                id="login-password"
                 type="password"
-                placeholder="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={isLoading}
+                value={loginForm.password}
+                onChange={(event) => setLoginForm((prev) => ({ ...prev, password: event.target.value }))}
+                placeholder="••••••••"
+                autoComplete="current-password"
                 required
+                disabled={isLoading}
               />
             </div>
 
@@ -81,49 +85,11 @@ export function LoginPage() {
             <Button type="submit" className="w-full" disabled={isLoading}>
               {isLoading ? "Signing in..." : "Sign In"}
             </Button>
-          </form>
 
-          <div className="mt-6 space-y-2">
-            <p className="text-xs text-muted-foreground text-center font-semibold">Demo Accounts</p>
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => handleDemoLogin("admin@test.com")}
-                disabled={isLoading}
-              >
-                Admin
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => handleDemoLogin("analyst@test.com")}
-                disabled={isLoading}
-              >
-                Analyst
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => handleDemoLogin("manager@test.com")}
-                disabled={isLoading}
-              >
-                Manager
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => handleDemoLogin("super_admin@test.com")}
-                disabled={isLoading}
-              >
-                Super Admin
-              </Button>
+            <div className="text-center text-sm text-muted-foreground pt-4">
+              Contact your administrator to create an account
             </div>
-          </div>
+          </form>
         </CardContent>
       </Card>
     </div>

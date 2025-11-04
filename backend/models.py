@@ -1,0 +1,199 @@
+from sqlalchemy import Column, String, Integer, DateTime, Text, JSON, ForeignKey, Enum as SQLEnum, Float, Index, UniqueConstraint
+from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.postgresql import ARRAY
+from datetime import datetime
+import enum
+from database import Base
+from pgvector.sqlalchemy import Vector
+
+
+class RBACLevel(str, enum.Enum):
+    ADMIN = "admin"
+    MANAGER = "manager"
+    ANALYST = "analyst"
+
+
+class JobStatus(str, enum.Enum):
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class FileType(str, enum.Enum):
+    DOCUMENT = "document"
+    AUDIO = "audio"
+    VIDEO = "video"
+    IMAGE = "image"
+
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    username = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    
+    # RBAC - Role-based access control
+    rbac_level = Column(SQLEnum(RBACLevel), default=RBACLevel.ANALYST, nullable=False)
+    
+    # Manager-Analyst relationship
+    manager_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    jobs = relationship("ProcessingJob", back_populates="user", foreign_keys="ProcessingJob.user_id")
+    
+    # Self-referential relationships for manager-analyst hierarchy
+    analysts = relationship("User", back_populates="manager", foreign_keys=[manager_id])
+    manager = relationship("User", back_populates="analysts", foreign_keys=[manager_id], remote_side=[id],)
+    
+    # Track who created this user
+    creator = relationship("User", foreign_keys=[created_by], remote_side=[id])
+
+
+class ProcessingJob(Base):
+    """Processing job model with format: manager_username/analyst_username/job_uuid"""
+    __tablename__ = "processing_jobs"
+    
+    id = Column(String, primary_key=True, index=True)  # Format: manager_username/analyst_username/uuid
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    status = Column(SQLEnum(JobStatus), default=JobStatus.QUEUED, nullable=False)
+    
+    gcs_prefix = Column(String, nullable=False)
+    
+    original_filenames = Column(JSON)
+    file_types = Column(JSON)  # Types of files (document/audio/video)
+    total_files = Column(Integer, default=0)
+    processed_files = Column(Integer, default=0)
+    
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    error_message = Column(Text)
+    
+    user = relationship("User", back_populates="jobs", foreign_keys=[user_id])
+    documents = relationship("Document", back_populates="job")
+    
+    def parse_job_id(self):
+        """Parse job_id to extract manager_username, analyst_username, and job_uuid"""
+        parts = self.id.split("/")
+        if len(parts) == 3:
+            return {
+                "manager_username": parts[0],
+                "analyst_username": parts[1],
+                "job_uuid": parts[2]
+            }
+        return None
+
+
+class Document(Base):
+    """Document model - represents individual processed files"""
+    __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("job_id", "original_filename", name="uq_job_document"),
+    )
+    
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=False)
+    
+    original_filename = Column(String, nullable=False)
+    file_type = Column(SQLEnum(FileType), nullable=False)
+    gcs_path = Column(String, nullable=False)  # Original file path in GCS
+    
+    extracted_text_path = Column(String)
+    translated_text_path = Column(String)
+    summary_path = Column(String)
+    transcription_path = Column(String)  # For audio/video files
+    
+    # Summary text (cached for quick access)
+    summary_text = Column(Text)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    job = relationship("ProcessingJob", back_populates="documents")
+    chunks = relationship("DocumentChunk", back_populates="document")
+    graph_entities = relationship("GraphEntity", back_populates="document")
+
+
+class DocumentChunk(Base):
+    """Document chunks with vector embeddings stored in AlloyDB"""
+    __tablename__ = "document_chunks"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
+    
+    # Chunk information
+    chunk_index = Column(Integer, nullable=False)
+    chunk_text = Column(Text, nullable=False)
+    
+    # Vector embedding (pgvector)
+    embedding = Column(Vector(768))  # Gemma embedding dimension
+    
+    chunk_metadata = Column("metadata", JSON)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    document = relationship("Document", back_populates="chunks")
+
+    # similarity search
+    __table_args__ = (
+        Index(
+            "ix_document_chunks_embedding",
+            "embedding",
+            postgresql_using="ivfflat",
+            postgresql_with={"lists": 100}
+        ),
+    )
+
+
+class GraphEntity(Base):
+    """Graph entities extracted from documents"""
+    __tablename__ = "graph_entities"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
+    
+    entity_id = Column(String, unique=True, index=True, nullable=False)  # Neo4j node ID or unique identifier
+    entity_name = Column(String, nullable=False)
+    entity_type = Column(String, nullable=False)
+    properties = Column(JSON)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    document = relationship("Document", back_populates="graph_entities")
+
+
+class GraphRelationship(Base):
+    __tablename__ = "graph_relationships"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    source_entity_id = Column(String, ForeignKey("graph_entities.entity_id"), nullable=False)
+    target_entity_id = Column(String, ForeignKey("graph_entities.entity_id"), nullable=False)
+    relationship_type = Column(String, nullable=False)
+    properties = Column(JSON)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ActivityLog(Base):
+    __tablename__ = "activity_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    activity_type = Column(String, nullable=False)  # upload, query, view_graph, etc.
+    details = Column(JSON)
+    
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)

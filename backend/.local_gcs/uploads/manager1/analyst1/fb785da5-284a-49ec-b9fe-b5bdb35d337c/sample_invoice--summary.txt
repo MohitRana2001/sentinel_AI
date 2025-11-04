@@ -1,0 +1,1 @@
+This is a sample invoice (INV-SAMPLE-001) dated January 15, 2024, from Sample Vendor Inc. (Vendor ID: VEND-123) to "Your Finance Department." The invoice is for five software licenses at $200 each, totaling $1,000. Payment terms are Net 30.

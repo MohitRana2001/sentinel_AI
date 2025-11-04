@@ -1,0 +1,251 @@
+version: "3.8"
+
+services:
+  # Redis for Pub/Sub messaging
+  redis:
+    image: redis:7-alpine
+    container_name: sentinel-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - sentinel-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # PostgreSQL with pgvector (AlloyDB equivalent for local dev)
+  alloydb:
+    image: ankane/pgvector:latest
+    container_name: sentinel-alloydb
+    environment:
+      POSTGRES_DB: sentinel_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - alloydb_data:/var/lib/postgresql/data
+    networks:
+      - sentinel-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Neo4j Graph Database
+  neo4j:
+    image: neo4j:5.16.0
+    container_name: sentinel-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/password
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+    ports:
+      - "7474:7474" # HTTP
+      - "7687:7687" # Bolt
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - sentinel-network
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "password", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Summary LLM (Gemma3:1b - CPU)
+  summary-llm:
+    image: ollama/ollama:latest
+    container_name: sentinel-summary-llm
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_summary:/root/.ollama
+    networks:
+      - sentinel-network
+    command: serve
+
+  # Graph LLM (Gemma3:4b - CPU)
+  graph-llm:
+    image: ollama/ollama:latest
+    container_name: sentinel-graph-llm
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_graph:/root/.ollama
+    networks:
+      - sentinel-network
+    command: serve
+
+  # Chat LLM (Gemma3:1b - CPU)
+  chat-llm:
+    image: ollama/ollama:latest
+    container_name: sentinel-chat-llm
+    ports:
+      - "11436:11434"
+    volumes:
+      - ollama_chat:/root/.ollama
+    networks:
+      - sentinel-network
+    command: serve
+
+  # Multimodal LLM (Gemma3:12b - GPU) - Optional, comment out if no GPU
+  # multimodal-llm:
+  #   image: ollama/ollama:latest
+  #   container_name: sentinel-multimodal-llm
+  #   ports:
+  #     - "11437:11434"
+  #   volumes:
+  #     - ollama_multimodal:/root/.ollama
+  #   networks:
+  #     - sentinel-network
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   command: serve
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-backend
+    environment:
+      # Upload Limits (CONFIGURABLE HERE!)
+      MAX_UPLOAD_FILES: ${MAX_UPLOAD_FILES:-10}
+      MAX_FILE_SIZE_MB: ${MAX_FILE_SIZE_MB:-4}
+      ALLOWED_EXTENSIONS: ${ALLOWED_EXTENSIONS:-.pdf,.docx,.txt,.mp3,.wav,.mp4,.avi,.mov}
+
+      # Services
+      REDIS_HOST: redis
+      ALLOYDB_HOST: alloydb
+      ALLOYDB_PASSWORD: password
+
+      # Neo4j
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: password
+
+      # LLM Services
+      SUMMARY_LLM_HOST: summary-llm
+      GRAPH_LLM_HOST: graph-llm
+      GRAPH_LLM_PORT: 11434
+      CHAT_LLM_HOST: chat-llm
+      # MULTIMODAL_LLM_HOST: multimodal-llm  # Uncomment if using GPU
+
+      # GCS (for local dev, can use local storage)
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-sentinel-local}
+      GCS_PROJECT_ID: ${GCS_PROJECT_ID:-local}
+
+      # Other
+      FRONTEND_URL: http://localhost:3000
+      DEBUG: "True"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./credentials:/app/credentials # Mount GCS credentials if needed
+    depends_on:
+      redis:
+        condition: service_healthy
+      alloydb:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    networks:
+      - sentinel-network
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Document Processor Service
+  document-processor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-document-processor
+    environment:
+      REDIS_HOST: redis
+      ALLOYDB_HOST: alloydb
+      ALLOYDB_PASSWORD: password
+      SUMMARY_LLM_HOST: summary-llm
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-sentinel-local}
+    volumes:
+      - ./backend:/app
+      - ./credentials:/app/credentials
+    depends_on:
+      - redis
+      - alloydb
+      - summary-llm
+    networks:
+      - sentinel-network
+    command: python processors/document_processor_service.py
+
+  # Graph Processor Service
+  graph-processor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel-graph-processor
+    environment:
+      REDIS_HOST: redis
+      ALLOYDB_HOST: alloydb
+      ALLOYDB_PASSWORD: password
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: password
+      GRAPH_LLM_HOST: graph-llm
+      GRAPH_LLM_PORT: 11434
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-sentinel-local}
+    volumes:
+      - ./backend:/app
+      - ./credentials:/app/credentials
+    depends_on:
+      - redis
+      - neo4j
+      - graph-llm
+    networks:
+      - sentinel-network
+    command: python processors/graph_processor_service.py
+
+  # Frontend (Next.js)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sentinel-frontend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+      NEXT_PUBLIC_MAX_UPLOAD_FILES: ${MAX_UPLOAD_FILES:-10}
+      NEXT_PUBLIC_MAX_FILE_SIZE_MB: ${MAX_FILE_SIZE_MB:-4}
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    networks:
+      - sentinel-network
+    command: npm run dev
+
+networks:
+  sentinel-network:
+    driver: bridge
+    name: sentinel-network
+
+volumes:
+  alloydb_data:
+  neo4j_data:
+  neo4j_logs:
+  ollama_summary:
+  ollama_graph:
+  ollama_chat:
+  ollama_multimodal:

@@ -48,3 +48,14 @@ backend/venv/
 
 .ipynb_checkpoints/
 .local_gcs/
+
+# Model files and datasets (uploaded separately)
+dlt/
+tessdata/
+backend/dlt/
+backend/tessdata/
+*.pb
+*.tflite
+*.onnx
+models/
+backend/models/

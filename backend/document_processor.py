@@ -1,6 +1,7 @@
-import fitz # PyMuPDF
-from PIL import Image
-import pytesseract
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractOcrOptions
+from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
 import glob
 import time
 from pathlib import Path
@@ -16,6 +17,7 @@ from ollama import Client
 import pickle
 import sys
 from indicnlp.tokenize import sentence_tokenize
+import os
 
 # Import config for flexible configuration
 try:
@@ -27,28 +29,124 @@ except ImportError:
     OLLAMA_HOST = 'http://localhost:11434'
     TRANSLATION_THRESHOLD_MB = 10
 
-def ocr_pdf_pymupdf(pdf_path,lang):
-    text = ""
-    doc = fitz.open(pdf_path)
-    for page_num in range(len(doc)):
-        print(f"Extracting {page_num}")
-        page = doc.load_page(page_num)
-        zoom = 2
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat) # Render page as pixmap
-        print(f"Got the image, preparing for extraction")
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples) # Convert pixmap to PIL Image
-        print(f"Image created. Calling tesseract")
+def ocr_pdf_pymupdf(pdf_path, lang):
+    """
+    Extract text from PDF using Docling with Tesseract OCR support.
+    Replaces the old PyMuPDF + Pytesseract implementation.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        lang: Language code for OCR (e.g., 'eng', 'hin', 'eng+hin')
+    
+    Returns:
+        Extracted text as string
+    """
+    print(f"📄 Processing document with Docling: {pdf_path}")
+    
+    try:
+        # Configure Tesseract OCR options
+        # Docling uses Tesseract backend, so we configure it here
+        tesseract_options = TesseractOcrOptions(
+            lang=lang if lang else "eng"
+        )
+        
+        # Configure PDF pipeline with OCR
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_ocr = True
+        pipeline_options.ocr_options = tesseract_options
+        
+        # Create document converter with OCR enabled
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(
+                    pipeline_options=pipeline_options,
+                    backend=PyPdfiumDocumentBackend
+                )
+            }
+        )
+        
+        # Convert the document
+        print(f"🔄 Converting document...")
+        result = converter.convert(pdf_path)
+        
+        # Extract text from the result
+        # Docling provides markdown output by default
+        text = result.document.export_to_markdown()
+        
+        print(f"✅ Extracted {len(text)} characters using Docling")
+        return text
+        
+    except Exception as e:
+        print(f"❌ Error processing with Docling: {e}")
+        traceback.print_exc()
+        
+        # Fallback: try simple text extraction without OCR
         try:
-            text += pytesseract.image_to_string(img,lang)
-            osd = pytesseract.image_to_osd(img)
-            #print(osd)
-            #print(f"Extracted {page_num}")
-        except Exception as e:
-            print(f"Exception occured {e}")
+            print("⚠️  Attempting fallback extraction...")
+            converter = DocumentConverter()
+            result = converter.convert(pdf_path)
+            text = result.document.export_to_markdown()
+            print(f"✅ Fallback extracted {len(text)} characters")
+            return text
+        except Exception as fallback_error:
+            print(f"❌ Fallback also failed: {fallback_error}")
             traceback.print_exc()
-            text+="\n"
-    return text
+            return ""
+
+def process_document_with_docling(file_path, lang=None):
+    """
+    Process any document format using Docling (PDF, DOCX, PPTX, images, etc.)
+    This is a more general function that auto-detects format and processes accordingly.
+    
+    Args:
+        file_path: Path to the document file
+        lang: Optional language code for OCR (e.g., 'eng', 'hin', 'eng+hin')
+    
+    Returns:
+        Extracted text as string
+    """
+    print(f"📄 Processing document with Docling: {file_path}")
+    
+    try:
+        # Get file extension to determine format
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        # Configure OCR for formats that might need it
+        if file_ext in ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.bmp']:
+            tesseract_options = TesseractOcrOptions(
+                lang=lang if lang else "eng"
+            )
+            
+            pipeline_options = PdfPipelineOptions()
+            pipeline_options.do_ocr = True
+            pipeline_options.ocr_options = tesseract_options
+            
+            converter = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(
+                        pipeline_options=pipeline_options,
+                        backend=PyPdfiumDocumentBackend
+                    )
+                }
+            )
+        else:
+            # For DOCX, PPTX, etc., use default converter
+            converter = DocumentConverter()
+        
+        # Convert the document
+        print(f"🔄 Converting {file_ext} document...")
+        result = converter.convert(file_path)
+        
+        # Extract text (Docling can export to markdown, JSON, or plain text)
+        text = result.document.export_to_markdown()
+        
+        print(f"✅ Extracted {len(text)} characters using Docling")
+        return text
+        
+    except Exception as e:
+        print(f"❌ Error processing with Docling: {e}")
+        traceback.print_exc()
+        return ""
 
 def translate(dir_path, file_path):
     """

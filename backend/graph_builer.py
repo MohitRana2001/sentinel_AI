@@ -27,6 +27,14 @@ except Exception:
     OPENAI_AVAILABLE = False
     print("⚠️  ChatOpenAI not available")
 
+# Optional Gemini via LangChain (for local dev)
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
+    GOOGLE_GENAI_AVAILABLE = True
+except Exception:
+    ChatGoogleGenerativeAI = None
+    GOOGLE_GENAI_AVAILABLE = False
+    print("⚠️  ChatGoogleGenerativeAI not available")
 # Optional Ollama chat fallback (for local 11434 endpoints)
 try:
     from langchain_ollama import ChatOllama  # type: ignore
@@ -75,7 +83,7 @@ else:
     print("❌ Neo4j not available")
 
 # ---------------------------------------------------------------------------
-# LLM Initialization - ChatOpenAI (OpenAI-compatible) with fallback to Ollama
+# LLM Initialization - Prefer Gemini in local dev; otherwise OpenAI-compatible with fallback to Ollama
 # ---------------------------------------------------------------------------
 llm = None
 llm_transformer = None
@@ -88,7 +96,42 @@ prefer_ollama = (
     ("ollama" in str(GRAPH_LLM_URL).lower())
 )
 
-if prefer_ollama and OLLAMA_AVAILABLE:
+# 1) Local dev: Gemini via google-genai if enabled and available
+try_gemini = False
+try:
+    from config import settings as _settings
+    try_gemini = (
+        getattr(_settings, 'USE_GEMINI_FOR_DEV', False)
+        and bool(getattr(_settings, 'GEMINI_API_KEY', ''))
+    )
+except Exception:
+    try_gemini = False
+
+if try_gemini and GOOGLE_GENAI_AVAILABLE:
+    try:
+        print("🔷 Initializing Gemini (ChatGoogleGenerativeAI) for local development")
+        model_name = GRAPH_LLM_MODEL  # allow override via GRAPH_LLM_MODEL
+        # If GRAPH_LLM_MODEL is not a Gemini name, fall back to GOOGLE_CHAT_MODEL
+        if not isinstance(model_name, str) or not model_name.lower().startswith("gemini"):
+            try:
+                from config import settings as _s
+                model_name = getattr(_s, 'GOOGLE_CHAT_MODEL', 'gemini-2.0-flash-exp')
+            except Exception:
+                model_name = 'gemini-2.0-flash-exp'
+        llm = ChatGoogleGenerativeAI(
+            model=model_name,
+            google_api_key=getattr(_settings, 'GEMINI_API_KEY', None),
+            temperature=0,
+        )
+        if GRAPH_TRANSFORMER_AVAILABLE:
+            llm_transformer = LLMGraphTransformer(llm=llm)
+            print(f"Graph transformer initialized with {model_name} (Gemini)")
+            initialized = True
+    except Exception as exc:
+        print(f"⚠️  Gemini initialization failed: {exc}")
+
+# 2) Ollama path when URL suggests Ollama
+if not initialized and prefer_ollama and OLLAMA_AVAILABLE:
     try:
         print(f"🟠 Falling back to ChatOllama at: {GRAPH_LLM_URL}")
         llm = ChatOllama(

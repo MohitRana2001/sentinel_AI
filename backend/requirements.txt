@@ -23,22 +23,31 @@ dl-translate==0.3.0
 indic-nlp-library==0.92
 python-docx==1.1.2
 
-langchain
-langchain-community
-langchain-core
-langchain-experimental
-langchain-text-splitters
-langchain-ollama
-langchain-google-genai
-ollama
+moviepy
+imageio
+imageio-ffmpeg
+
+docling
+docling-core
+langid
+
+# Graph and LLM dependencies (LangChain 0.3.x ecosystem)
+# Keep everything on 0.3.x-compatible ranges to avoid core conflicts
+neo4j==5.28.2
+langchain==0.3.27
+langchain-openai==0.3.0
+langchain-neo4j==0.5.0
+langchain-experimental==0.3.4
+langchain-text-splitters==0.3.11
+# langchain-ollama 1.x requires langchain-core >=1.0; stay on 0.2.x for 0.3.x core
+langchain-ollama==0.2.2
 google-generativeai
-neo4j
-langchain-neo4j
 
 python-jose[cryptography]
 passlib[bcrypt]
 python-dateutil
-bcrypt
+# Pin to <4 for compatibility with passlib 1.7.x
+bcrypt<4
 
 python-dotenv
 httpx

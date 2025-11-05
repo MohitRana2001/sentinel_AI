@@ -14,7 +14,8 @@ from database import get_db, init_db
 import models
 from models import RBACLevel 
 
-from gcs_storage import gcs_storage
+# Import new configurable storage system
+from storage_config import storage_manager
 from redis_pubsub import redis_pubsub
 from vector_store import VectorStore
 try:
@@ -663,7 +664,7 @@ async def upload_documents(
     for file in files:
         try:
             gcs_path = f"{gcs_prefix}{file.filename}"
-            gcs_storage.upload_file(file.file, gcs_path)
+            storage_manager.upload_file(file.file, gcs_path)
             filenames.append(file.filename)
             
             ext = file.filename.split('.')[-1].lower()
@@ -850,7 +851,7 @@ async def get_document_summary(
         content = document.summary_text
     elif document.summary_path:
         try:
-            content = gcs_storage.download_text(document.summary_path)
+            content = storage_manager.download_text(document.summary_path)
         except:
             content = "Summary not available"
     else:
@@ -891,7 +892,7 @@ async def get_document_transcription(
         raise HTTPException(404, "Transcription not available for this document")
     
     try:
-        content = gcs_storage.download_text(text_path)
+        content = storage_manager.download_text(text_path)
     except Exception as e:
         print(f"❌ Error retrieving transcription: {e}")
         raise HTTPException(500, f"Failed to retrieve transcription: {str(e)}")
@@ -925,7 +926,7 @@ async def get_document_translation(
         raise HTTPException(404, "Translation not available for this document")
     
     try:
-        content = gcs_storage.download_text(document.translated_text_path)
+        content = storage_manager.download_text(document.translated_text_path)
     except:
         raise HTTPException(500, "Failed to retrieve translation")
     
@@ -985,12 +986,37 @@ async def get_job_graph(
         return {"nodes": [], "relationships": []} # No documents, empty graph
 
     # 3. Query Neo4j for nodes and relationships matching these document IDs
+    # This query fetches:
+    # - All entities with matching document_ids
+    # - Document nodes matching the document_ids
+    # - User nodes that own these documents (via OWNS relationship)
+    # - All relationships between entities
+    # - OWNS and CONTAINS_ENTITY relationships
     cypher_query = """
-    MATCH (n)
-    WHERE n.document_id IN $doc_ids
-    OPTIONAL MATCH (n)-[r]-(m)
-    WHERE m.document_id IN $doc_ids
-    RETURN n, r, m
+    // Get Document nodes
+    MATCH (doc:Document)
+    WHERE doc.document_id IN $doc_ids
+    
+    // Get User nodes that own these documents
+    OPTIONAL MATCH (user:User)-[:OWNS]->(doc)
+    
+    // Get entities in these documents
+    OPTIONAL MATCH (doc)-[:CONTAINS_ENTITY]->(entity)
+    
+    // Get relationships between entities
+    OPTIONAL MATCH (entity)-[rel]-(other)
+    WHERE other.document_id IN $doc_ids OR other:Document OR other:User
+    
+    // Return everything
+    WITH collect(DISTINCT doc) as docs, 
+         collect(DISTINCT user) as users, 
+         collect(DISTINCT entity) as entities,
+         collect(DISTINCT rel) as rels
+    
+    UNWIND (docs + users + entities) AS node
+    WITH collect(DISTINCT node) as all_nodes, rels
+    
+    RETURN all_nodes, rels
     """
     
     try:
@@ -1004,33 +1030,73 @@ async def get_job_graph(
     relationships = set()
 
     for record in result:
-        node_n = record["n"]
-        rel = record["r"]
-        node_m = record["m"]
-
-        if node_n:
-            nodes[node_n.get("id")] = {
-                "id": node_n.get("id"),
-                "label": node_n.get("id"), # Use 'id' for label
-                "type": list(node_n.labels)[0] if node_n.labels else "Node",
-                "properties": dict(node_n)
+        all_nodes = record.get("all_nodes", [])
+        rels = record.get("rels", [])
+        
+        # Process nodes
+        for node in all_nodes:
+            if node is None:
+                continue
+            
+            # Get node ID - for Document nodes use document_id, for User use username, otherwise use 'id'
+            node_labels = list(node.labels) if hasattr(node, 'labels') and node.labels else []
+            
+            if "Document" in node_labels:
+                node_id = node.get("document_id") or node.get("id") or str(id(node))
+                node_label = node.get("filename", node_id)
+            elif "User" in node_labels:
+                node_id = node.get("username") or str(id(node))
+                node_label = node_id
+            else:
+                node_id = node.get("id") or str(id(node))
+                node_label = node_id
+            
+            nodes[node_id] = {
+                "id": node_id,
+                "label": node_label,
+                "type": node_labels[0] if node_labels else "Node",
+                "properties": dict(node) if hasattr(node, '__iter__') else {}
             }
         
-        if node_m:
-            nodes[node_m.get("id")] = {
-                "id": node_m.get("id"),
-                "label": node_m.get("id"),
-                "type": list(node_m.labels)[0] if node_m.labels else "Node",
-                "properties": dict(node_m)
-            }
-
-        if rel:
-            relationships.add((
-                rel.start_node.get("id"), 
-                rel.end_node.get("id"),
-                rel.type,
-                tuple(rel.properties.items())
-            ))
+        # Process relationships
+        for rel in rels:
+            if rel is None:
+                continue
+            
+            # Get source and target node IDs
+            start_node = rel.start_node if hasattr(rel, 'start_node') else None
+            end_node = rel.end_node if hasattr(rel, 'end_node') else None
+            
+            if not start_node or not end_node:
+                continue
+            
+            start_labels = list(start_node.labels) if hasattr(start_node, 'labels') and start_node.labels else []
+            end_labels = list(end_node.labels) if hasattr(end_node, 'labels') and end_node.labels else []
+            
+            # Get source ID
+            if "Document" in start_labels:
+                source_id = start_node.get("document_id") or start_node.get("id")
+            elif "User" in start_labels:
+                source_id = start_node.get("username")
+            else:
+                source_id = start_node.get("id")
+            
+            # Get target ID
+            if "Document" in end_labels:
+                target_id = end_node.get("document_id") or end_node.get("id")
+            elif "User" in end_labels:
+                target_id = end_node.get("username")
+            else:
+                target_id = end_node.get("id")
+            
+            if source_id and target_id:
+                rel_props = dict(rel.properties) if hasattr(rel, 'properties') else {}
+                relationships.add((
+                    source_id,
+                    target_id,
+                    rel.type if hasattr(rel, 'type') else "RELATED",
+                    tuple(rel_props.items())
+                ))
 
     return {
         "nodes": list(nodes.values()),

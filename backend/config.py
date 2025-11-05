@@ -45,9 +45,17 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "4"))
     ALLOWED_EXTENSIONS: str = os.getenv("ALLOWED_EXTENSIONS", ".pdf,.docx,.txt,.mp3,.wav,.mp4,.avi,.mov")
     
+    # Supported backends: 'gcs', 's3', 'local', 'azure' (future)
+    STORAGE_BACKEND: str = os.getenv("STORAGE_BACKEND", "gcs")
+    
+    # GCS Configuration
     GCS_BUCKET_NAME: str = os.getenv("GCS_BUCKET_NAME", "")
     GCS_PROJECT_ID: str = os.getenv("GCS_PROJECT_ID", "")
     GCS_CREDENTIALS_PATH: str = os.getenv("GCS_CREDENTIALS_PATH", "/app/credentials/gcs-key.json")
+
+    # Local Storage Configuration
+    LOCAL_STORAGE_PATH: str = os.getenv("LOCAL_STORAGE_PATH", "./.local_storage")
+
     LOCAL_GCS_STORAGE_PATH: str = os.getenv("LOCAL_GCS_STORAGE_PATH", "./.local_gcs")
     
     # Redis Configuration
@@ -91,9 +99,9 @@ class Settings(BaseSettings):
     SUMMARY_LLM_PORT: int = int(os.getenv("SUMMARY_LLM_PORT", "11434"))
     SUMMARY_LLM_MODEL: str = os.getenv("SUMMARY_LLM_MODEL", "gemma3:1b")
     
-    GRAPH_LLM_HOST: str = os.getenv("GRAPH_LLM_HOST", "localhost")
-    GRAPH_LLM_PORT: int = int(os.getenv("GRAPH_LLM_PORT", "11435"))
-    GRAPH_LLM_MODEL: str = os.getenv("GRAPH_LLM_MODEL", "gemma3:4b")
+    GRAPH_LLM_HOST: str = os.getenv("GRAPH_LLM_HOST", "10.0.2.4")
+    GRAPH_LLM_PORT: int = int(os.getenv("GRAPH_LLM_PORT", "8000"))
+    GRAPH_LLM_MODEL: str = os.getenv("GRAPH_LLM_MODEL", "google/gemma-3-4b-it")
     
     CHAT_LLM_HOST: str = os.getenv("CHAT_LLM_HOST", "localhost")
     CHAT_LLM_PORT: int = int(os.getenv("CHAT_LLM_PORT", "11436"))

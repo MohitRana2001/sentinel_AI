@@ -1,6 +1,26 @@
 """
-Google Cloud Storage utilities for file management
+DEPRECATED: Legacy GCS Storage Module
+
+This module is maintained for backward compatibility only.
+New code should use the configurable storage system instead:
+
+    from storage_config import storage_manager
+    
+    # Use storage_manager for all operations
+    storage_manager.upload_file(file_obj, path)
+    storage_manager.download_text(path)
+
+The new storage system supports multiple backends (GCS, S3, Local, Azure)
+configured via STORAGE_BACKEND environment variable.
 """
+import warnings
+
+warnings.warn(
+    "gcs_storage module is deprecated. Use 'from storage_config import storage_manager' instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
+
 import os
 import shutil
 import tempfile

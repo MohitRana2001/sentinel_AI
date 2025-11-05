@@ -41,15 +41,32 @@ services:
       - redis
     restart: unless-stopped
 
-  # Audio/Video processor
-  audio-video-worker:
+  # Audio processor
+  audio-worker:
     build:
       context: .
-      dockerfile: Dockerfile.audio_video_processor
+      dockerfile: Dockerfile.audio_processor
     environment:
       - REDIS_HOST=redis
       - ALLOYDB_HOST=${ALLOYDB_HOST}
       - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - MULTIMODAL_LLM_HOST=ollama
+      - MULTIMODAL_LLM_PORT=11437
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Video processor
+  video-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.video_processor
+    environment:
+      - REDIS_HOST=redis
+      - ALLOYDB_HOST=${ALLOYDB_HOST}
+      - GCS_BUCKET_NAME=${GCS_BUCKET_NAME}
+      - MULTIMODAL_LLM_HOST=ollama
+      - MULTIMODAL_LLM_PORT=11437
     depends_on:
       - redis
     restart: unless-stopped

@@ -24,7 +24,10 @@ interface GraphLink {
   properties?: Record<string, any>;
 }
 
-export function GraphVisualization({ jobId, selectedDocumentIds }: GraphVisualizationProps) {
+export function GraphVisualization({
+  jobId,
+  selectedDocumentIds,
+}: GraphVisualizationProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -81,8 +84,19 @@ export function GraphVisualization({ jobId, selectedDocumentIds }: GraphVisualiz
         })
     );
 
-    // Create color scale for different node types
-    const color = d3.scaleOrdinal(d3.schemeCategory10);
+    // Create color scale for different node types with custom colors
+    const colorMap: Record<string, string> = {
+      User: "#3b82f6", // Blue for users
+      Document: "#f97316", // Orange for documents
+      Person: "#10b981", // Green for people
+      Organization: "#8b5cf6", // Purple for organizations
+      Location: "#f59e0b", // Amber for locations
+      Event: "#ec4899", // Pink for events
+    };
+
+    const color = (type: string) => {
+      return colorMap[type] || d3.scaleOrdinal(d3.schemeCategory10)(type);
+    };
 
     // Create force simulation
     const simulation = d3
@@ -270,17 +284,30 @@ export function GraphVisualization({ jobId, selectedDocumentIds }: GraphVisualiz
         <svg ref={svgRef} className="w-full h-full"></svg>
       </div>
       <div className="mt-4 flex flex-wrap gap-2">
-        {Array.from(new Set(graphData.nodes.map((n) => n.type))).map((type) => (
-          <div key={type} className="flex items-center gap-2 text-sm">
-            <div
-              className="w-4 h-4 rounded-full"
-              style={{
-                backgroundColor: d3.scaleOrdinal(d3.schemeCategory10)(type),
-              }}
-            ></div>
-            <span className="capitalize">{type}</span>
-          </div>
-        ))}
+        {Array.from(new Set(graphData.nodes.map((n) => n.type))).map((type) => {
+          const colorMap: Record<string, string> = {
+            User: "#3b82f6",
+            Document: "#f97316",
+            Person: "#10b981",
+            Organization: "#8b5cf6",
+            Location: "#f59e0b",
+            Event: "#ec4899",
+          };
+          const nodeColor =
+            colorMap[type] || d3.scaleOrdinal(d3.schemeCategory10)(type);
+
+          return (
+            <div key={type} className="flex items-center gap-2 text-sm">
+              <div
+                className="w-4 h-4 rounded-full"
+                style={{
+                  backgroundColor: nodeColor,
+                }}
+              ></div>
+              <span className="capitalize">{type}</span>
+            </div>
+          );
+        })}
       </div>
     </Card>
   );

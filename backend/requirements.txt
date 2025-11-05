@@ -4,6 +4,7 @@ uvicorn
 python-multipart
 pydantic
 pydantic-settings
+pydantic[email]
 
 psycopg2-binary
 sqlalchemy
@@ -50,9 +51,4 @@ python-dotenv
 httpx
 aiofiles
 requests
-
-uvicorn
-fastapi
-sqlalchemy
 dotenv
-pydantic[email]

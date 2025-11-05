@@ -29,6 +29,36 @@ except ImportError:
     OLLAMA_HOST = 'http://localhost:11434'
     TRANSLATION_THRESHOLD_MB = 10
 
+# Supported document formats for Docling processing
+DOCLING_SUPPORTED_FORMATS = {'.pdf', '.docx', '.pptx', '.png', '.jpg', '.jpeg', '.tiff', '.bmp'}
+
+def _create_docling_converter_with_ocr(lang=None):
+    """
+    Helper function to create a Docling converter with OCR configuration.
+    
+    Args:
+        lang: Language code for OCR (e.g., 'eng', 'hin', 'eng+hin')
+    
+    Returns:
+        Configured DocumentConverter instance
+    """
+    tesseract_options = TesseractOcrOptions(
+        lang=lang if lang else "eng"
+    )
+    
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.do_ocr = True
+    pipeline_options.ocr_options = tesseract_options
+    
+    return DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(
+                pipeline_options=pipeline_options,
+                backend=PyPdfiumDocumentBackend
+            )
+        }
+    )
+
 def ocr_pdf_pymupdf(pdf_path, lang):
     """
     Extract text from PDF using Docling with Tesseract OCR support.
@@ -44,26 +74,8 @@ def ocr_pdf_pymupdf(pdf_path, lang):
     print(f"📄 Processing document with Docling: {pdf_path}")
     
     try:
-        # Configure Tesseract OCR options
-        # Docling uses Tesseract backend, so we configure it here
-        tesseract_options = TesseractOcrOptions(
-            lang=lang if lang else "eng"
-        )
-        
-        # Configure PDF pipeline with OCR
-        pipeline_options = PdfPipelineOptions()
-        pipeline_options.do_ocr = True
-        pipeline_options.ocr_options = tesseract_options
-        
         # Create document converter with OCR enabled
-        converter = DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(
-                    pipeline_options=pipeline_options,
-                    backend=PyPdfiumDocumentBackend
-                )
-            }
-        )
+        converter = _create_docling_converter_with_ocr(lang)
         
         # Convert the document
         print(f"🔄 Converting document...")
@@ -93,6 +105,7 @@ def ocr_pdf_pymupdf(pdf_path, lang):
             traceback.print_exc()
             return ""
 
+
 def process_document_with_docling(file_path, lang=None):
     """
     Process any document format using Docling (PDF, DOCX, PPTX, images, etc.)
@@ -111,24 +124,9 @@ def process_document_with_docling(file_path, lang=None):
         # Get file extension to determine format
         file_ext = os.path.splitext(file_path)[1].lower()
         
-        # Configure OCR for formats that might need it
-        if file_ext in ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.bmp']:
-            tesseract_options = TesseractOcrOptions(
-                lang=lang if lang else "eng"
-            )
-            
-            pipeline_options = PdfPipelineOptions()
-            pipeline_options.do_ocr = True
-            pipeline_options.ocr_options = tesseract_options
-            
-            converter = DocumentConverter(
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(
-                        pipeline_options=pipeline_options,
-                        backend=PyPdfiumDocumentBackend
-                    )
-                }
-            )
+        # Configure OCR for formats that might need it (PDF and images)
+        if file_ext in {'.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.bmp'}:
+            converter = _create_docling_converter_with_ocr(lang)
         else:
             # For DOCX, PPTX, etc., use default converter
             converter = DocumentConverter()

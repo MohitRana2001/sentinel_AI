@@ -7,7 +7,7 @@ from gcs_storage import gcs_storage
 from config import settings
 from database import SessionLocal
 import models
-from document_processor import ocr_pdf_pymupdf, translate, get_summary, process_document_with_docling
+from document_processor import ocr_pdf_pymupdf, translate, get_summary, process_document_with_docling, DOCLING_SUPPORTED_FORMATS
 from vector_store import vectorise_and_store_alloydb
 from ollama import Client
 import tempfile
@@ -216,7 +216,7 @@ class DocumentProcessorService:
                     raise ValueError(f"Text file {filename} is empty or could not be read")
                 
                 print(f"Successfully read {len(extracted_text)} characters from text file")
-            elif suffix.lower() in ['.pdf', '.docx', '.pptx', '.png', '.jpg', '.jpeg', '.tiff', '.bmp']:
+            elif suffix.lower() in DOCLING_SUPPORTED_FORMATS:
                 # Use Docling for document processing (PDF, DOCX, PPTX, images)
                 print(f"📄 Processing {suffix} with Docling ({lang})...")
                 extracted_text = process_document_with_docling(temp_file, lang)

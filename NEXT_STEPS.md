@@ -2,7 +2,7 @@
 
 ## Summary
 
-The Docling integration has been successfully implemented on the `copilot/featuredocling` branch. All code changes are complete and committed.
+The Docling integration has been successfully implemented on the `feature/docling` branch (also mirrored on `copilot/featuredocling`). All code changes are complete and committed.
 
 ## What Has Been Done
 
@@ -12,14 +12,18 @@ The Docling integration has been successfully implemented on the `copilot/featur
   - Added new function `process_document_with_docling()` for multi-format support
   - Maintained backward compatibility with existing `ocr_pdf_pymupdf()` function
   - Added proper error handling and fallback mechanisms
+  - Added helper function `_create_docling_converter_with_ocr()` to reduce code duplication
+  - Added constant `DOCLING_SUPPORTED_FORMATS` for centralized format configuration
 
 - **Updated `backend/processors/document_processor_service.py`**
   - Integrated Docling for PDF, DOCX, PPTX, and image processing
   - Added support for additional document formats
+  - Uses `DOCLING_SUPPORTED_FORMATS` constant for format checking
 
 - **Updated `backend/requirements.txt`**
   - Added Docling dependencies: `docling`, `docling-core`, `docling-ibm-models`, `pypdfium2`
   - Kept existing libraries for backward compatibility
+  - Removed duplicate dependencies
 
 - **Updated `.gitignore`**
   - Excluded model directories: `dlt/`, `tessdata/`, `models/`
@@ -38,31 +42,26 @@ The Docling integration has been successfully implemented on the `copilot/featur
   - Verification commands
 
 ### 3. Git Branch ✅
-- All changes committed to `copilot/featuredocling` branch
-- Branch is pushed to origin
+- All changes committed to `feature/docling` branch
+- Also available on `copilot/featuredocling` branch
+- Branches are pushed to origin
 
 ## What Needs to Be Done Manually
 
 ### 1. Create the Pull Request
 
-Since the code is on `copilot/featuredocling` branch, you need to:
+The code is on the `feature/docling` branch, ready for PR:
 
 **Option A: Create PR via GitHub Web Interface**
 1. Go to https://github.com/MohitRana2001/sentinel_AI
-2. Click "Compare & pull request" for `copilot/featuredocling` branch
-3. Change the target branch name to `feature/docling` (create it if needed)
-4. Or create a PR to merge `copilot/featuredocling` into `main` branch
-5. Add the PR title: "Integrate Docling for Document Processing"
-6. Copy the PR description from the commit message or from below
+2. Click "Compare & pull request" for `feature/docling` branch
+3. Set base branch to `main`
+4. Add the PR title: "Integrate Docling for Document Processing"
+5. Copy the PR description from below
 
-**Option B: Create Feature Branch and PR via Git**
+**Option B: Use GitHub CLI (if authenticated)**
 ```bash
-# Checkout the copilot branch
-git checkout copilot/featuredocling
-
-# Create and push feature/docling branch
-git checkout -b feature/docling
-git push origin feature/docling
+gh pr create --base main --head feature/docling --title "Integrate Docling for Document Processing"
 
 # Then create PR via GitHub web interface
 ```

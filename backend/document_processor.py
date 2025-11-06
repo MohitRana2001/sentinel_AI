@@ -261,19 +261,7 @@ def get_summary(file_path, ollama_client=None):
     with open(file_path, 'r') as file:
         document_content = file.read()
     
-    # ===== LOCAL DEV MODE: Use Gemini if configured =====
-    try:
-        from config import settings
-        if settings.USE_GEMINI_FOR_DEV and settings.GEMINI_API_KEY:
-            print("Using Gemini API for summarization (LOCAL DEV MODE)")
-            from gemini_client import gemini_client
-            summary = gemini_client.generate_summary(document_content, max_words=200)
-            print(f"Gemini summary generated for {file_path}")
-            return summary
-    except (ImportError, AttributeError) as e:
-        print(f"Gemini not configured, falling back to Ollama: {e}")
-    
-    # ===== PRODUCTION MODE: Use Ollama/Gemma =====
+    # Use Ollama for summarization
     if ollama_client is None:
         ollama_client = Client(host=OLLAMA_HOST)
     

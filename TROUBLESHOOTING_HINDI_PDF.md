@@ -342,4 +342,4 @@ If you still believe there's an issue after checking the above, provide:
 **Related Documentation**:
 - [README.md](README.md) - Full system documentation
 - [PROCESS_FLOW.md](PROCESS_FLOW.md) - Detailed process flows
-- [redis_pubsub_diagram.md](redis_pubsub_diagram.md) - Queue architecture
+- [REDIS_QUEUE_SYSTEM.md](REDIS_QUEUE_SYSTEM.md) - Queue architecture

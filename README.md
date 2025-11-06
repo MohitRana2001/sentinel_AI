@@ -1084,7 +1084,7 @@ tail -f /var/log/sentinel_ai/<service>.log
 ## 📚 Additional Documentation
 
 - [Storage Configuration Guide](backend/storage/README.md)
-- [Redis Pub/Sub Diagram](redis_pubsub_diagram.md)
+- [Redis Queue System](REDIS_QUEUE_SYSTEM.md)
 - [API Documentation](http://localhost:8000/api/v1/docs)
 - [RBAC Model](docs/rbac.md) (if exists)
 

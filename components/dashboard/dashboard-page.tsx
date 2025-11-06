@@ -11,6 +11,7 @@ import { AdminDashboard } from "./admin-dashboard";
 import { ManagerDashboard } from "./manager-dashboard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Pagination } from "@/components/ui/pagination";
 import { FileText, Clock } from "lucide-react";
 
 type AppState = "upload" | "processing" | "results";
@@ -24,6 +25,9 @@ export function DashboardPage() {
   const [pastJobs, setPastJobs] = useState<any[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [showPastJobs, setShowPastJobs] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalJobs, setTotalJobs] = useState(0);
+  const itemsPerPage = 15;
 
   // Route based on user role
   if (user?.rbacLevel === "admin") {
@@ -145,16 +149,23 @@ export function DashboardPage() {
     setUploadError(null);
   };
 
-  const loadPastJobs = async () => {
+  const loadPastJobs = async (page: number = currentPage) => {
     try {
       setLoadingJobs(true);
-      const jobs = await apiClient.getAnalystJobs(15, 0);
-      setPastJobs(jobs);
+      const offset = (page - 1) * itemsPerPage;
+      const response = await apiClient.getAnalystJobs(itemsPerPage, offset);
+      setPastJobs(response.jobs);
+      setTotalJobs(response.total);
     } catch (err) {
       console.error("Failed to load past jobs:", err);
     } finally {
       setLoadingJobs(false);
     }
+  };
+  
+  const handlePageChange = (page: number) => {
+    setCurrentPage(page);
+    loadPastJobs(page);
   };
 
   const viewPastJob = async (jobId: string) => {
@@ -286,6 +297,18 @@ export function DashboardPage() {
                         </CardContent>
                       </Card>
                     ))}
+                  </div>
+                )}
+                
+                {/* Pagination */}
+                {!loadingJobs && pastJobs.length > 0 && (
+                  <div className="mt-6">
+                    <Pagination
+                      currentPage={currentPage}
+                      totalItems={totalJobs}
+                      itemsPerPage={itemsPerPage}
+                      onPageChange={handlePageChange}
+                    />
                   </div>
                 )}
               </div>

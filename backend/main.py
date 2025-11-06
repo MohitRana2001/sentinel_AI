@@ -109,6 +109,22 @@ class JobWithAnalyst(BaseModel):
     processed_files: int
     created_at: datetime
     progress_percentage: float
+
+class PaginatedJobsResponse(BaseModel):
+    """Paginated jobs response with metadata."""
+    jobs: List[JobWithAnalyst]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+class PaginatedAnalystJobsResponse(BaseModel):
+    """Paginated jobs response for analyst."""
+    jobs: List[dict]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
 # --- END: PYDANTIC MODELS ---
 
 
@@ -517,18 +533,23 @@ async def manager_delete_analyst(
     return {"message": f"Analyst {analyst.email} deleted successfully"}
 
 
-@app.get(f"{settings.API_PREFIX}/manager/jobs", response_model=List[JobWithAnalyst])
+@app.get(f"{settings.API_PREFIX}/manager/jobs", response_model=PaginatedJobsResponse)
 async def manager_get_jobs(
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
     manager_user: models.User = Depends(get_manager)
 ):
-    """Manager endpoint to get all jobs from their analysts."""
+    """Manager endpoint to get all jobs from their analysts with pagination."""
     query = db.query(models.ProcessingJob).order_by(
         models.ProcessingJob.created_at.desc()
     )
     query = filter_jobs_scope(query, manager_user)
+    
+    # Get total count
+    total = query.count()
+    
+    # Get paginated jobs
     jobs = query.limit(limit).offset(offset).all()
     
     result = []
@@ -547,17 +568,26 @@ async def manager_get_jobs(
             progress_percentage=round(progress, 2)
         ))
     
-    return result
+    page = (offset // limit) + 1 if limit > 0 else 1
+    total_pages = (total + limit - 1) // limit if limit > 0 else 0
+    
+    return PaginatedJobsResponse(
+        jobs=result,
+        total=total,
+        page=page,
+        page_size=limit,
+        total_pages=total_pages
+    )
 
 
-@app.get(f"{settings.API_PREFIX}/analyst/jobs")
+@app.get(f"{settings.API_PREFIX}/analyst/jobs", response_model=PaginatedAnalystJobsResponse)
 async def analyst_get_jobs(
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Analyst endpoint to get their own jobs."""
+    """Analyst endpoint to get their own jobs with pagination."""
     if current_user.rbac_level != models.RBACLevel.ANALYST:
         raise HTTPException(status_code=403, detail="Analyst access required")
     
@@ -565,9 +595,13 @@ async def analyst_get_jobs(
         models.ProcessingJob.user_id == current_user.id
     ).order_by(models.ProcessingJob.created_at.desc())
     
+    # Get total count
+    total = query.count()
+    
+    # Get paginated jobs
     jobs = query.limit(limit).offset(offset).all()
     
-    return [
+    job_list = [
         {
             "job_id": job.id,
             "status": job.status.value,
@@ -578,6 +612,17 @@ async def analyst_get_jobs(
         }
         for job in jobs
     ]
+    
+    page = (offset // limit) + 1 if limit > 0 else 1
+    total_pages = (total + limit - 1) // limit if limit > 0 else 0
+    
+    return PaginatedAnalystJobsResponse(
+        jobs=job_list,
+        total=total,
+        page=page,
+        page_size=limit,
+        total_pages=total_pages
+    )
 
 # --- END: USER MANAGEMENT ENDPOINTS ---
 

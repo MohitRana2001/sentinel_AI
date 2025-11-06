@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Pagination } from "@/components/ui/pagination";
 import { apiClient } from "@/lib/api-client";
 import {
   Users,
@@ -41,6 +42,9 @@ export function ManagerDashboard() {
   // Jobs state
   const [jobs, setJobs] = useState<JobWithAnalyst[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalJobs, setTotalJobs] = useState(0);
+  const itemsPerPage = 15;
 
   // Modal states
   const [showCreateAnalystModal, setShowCreateAnalystModal] = useState(false);
@@ -74,17 +78,24 @@ export function ManagerDashboard() {
     }
   };
 
-  const loadJobs = async () => {
+  const loadJobs = async (page: number = currentPage) => {
     try {
       setLoadingJobs(true);
-      const data = await apiClient.getManagerJobs(15, 0);
-      setJobs(data);
+      const offset = (page - 1) * itemsPerPage;
+      const response = await apiClient.getManagerJobs(itemsPerPage, offset);
+      setJobs(response.jobs);
+      setTotalJobs(response.total);
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load jobs");
     } finally {
       setLoadingJobs(false);
     }
+  };
+  
+  const handlePageChange = (page: number) => {
+    setCurrentPage(page);
+    loadJobs(page);
   };
 
   const handleCreateAnalyst = async (e: React.FormEvent) => {
@@ -366,6 +377,18 @@ export function ManagerDashboard() {
                   </div>
                 </CardContent>
               </Card>
+            )}
+            
+            {/* Pagination */}
+            {!loadingJobs && jobs.length > 0 && (
+              <div className="mt-6">
+                <Pagination
+                  currentPage={currentPage}
+                  totalItems={totalJobs}
+                  itemsPerPage={itemsPerPage}
+                  onPageChange={handlePageChange}
+                />
+              </div>
             )}
           </div>
         )}

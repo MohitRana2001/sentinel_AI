@@ -483,7 +483,13 @@ class ApiClient {
   /**
    * Manager: Get all jobs from their analysts
    */
-  async getManagerJobs(limit: number = 50, offset: number = 0): Promise<any[]> {
+  async getManagerJobs(limit: number = 50, offset: number = 0): Promise<{
+    jobs: any[];
+    total: number;
+    page: number;
+    page_size: number;
+    total_pages: number;
+  }> {
     const response = await fetch(
       `${this.baseUrl}/manager/jobs?limit=${limit}&offset=${offset}`,
       {
@@ -501,7 +507,13 @@ class ApiClient {
   /**
    * Analyst: Get own jobs
    */
-  async getAnalystJobs(limit: number = 50, offset: number = 0): Promise<any[]> {
+  async getAnalystJobs(limit: number = 50, offset: number = 0): Promise<{
+    jobs: any[];
+    total: number;
+    page: number;
+    page_size: number;
+    total_pages: number;
+  }> {
     const response = await fetch(
       `${this.baseUrl}/analyst/jobs?limit=${limit}&offset=${offset}`,
       {

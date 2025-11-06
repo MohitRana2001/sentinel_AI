@@ -9,7 +9,7 @@ try:
 except Exception:
     Neo4jGraph = None
     NEO4J_AVAILABLE = False
-    print("⚠️  langchain_neo4j not available")
+    print("langchain_neo4j not available")
 
 try:
     from langchain_experimental.graph_transformers import LLMGraphTransformer
@@ -17,7 +17,7 @@ try:
 except Exception:
     LLMGraphTransformer = None
     GRAPH_TRANSFORMER_AVAILABLE = False
-    print("⚠️  LLMGraphTransformer not available")
+    print("LLMGraphTransformer not available")
 
 try:
     from langchain_openai import ChatOpenAI
@@ -25,7 +25,7 @@ try:
 except Exception:
     ChatOpenAI = None
     OPENAI_AVAILABLE = False
-    print("⚠️  ChatOpenAI not available")
+    print("ChatOpenAI not available")
 
 # Optional Gemini via LangChain (for local dev)
 try:
@@ -34,7 +34,7 @@ try:
 except Exception:
     ChatGoogleGenerativeAI = None
     GOOGLE_GENAI_AVAILABLE = False
-    print("⚠️  ChatGoogleGenerativeAI not available")
+    print("ChatGoogleGenerativeAI not available")
 # Optional Ollama chat fallback (for local 11434 endpoints)
 try:
     from langchain_ollama import ChatOllama  # type: ignore
@@ -42,7 +42,7 @@ try:
 except Exception:
     ChatOllama = None
     OLLAMA_AVAILABLE = False
-    print("⚠️  ChatOllama (Ollama) not available")
+    print("ChatOllama (Ollama) not available")
 
 # Import config
 try:
@@ -60,10 +60,6 @@ except ImportError:
     NEO4J_DATABASE = "neo4j"
     GRAPH_LLM_MODEL = "google/gemma-3-4b-it"
     GRAPH_LLM_URL = "http://10.0.2.4:8000"
-
-# ---------------------------------------------------------------------------
-# Neo4j Graph Initialization
-# ---------------------------------------------------------------------------
 graph = None
 
 if NEO4J_AVAILABLE:
@@ -75,16 +71,13 @@ if NEO4J_AVAILABLE:
             database=NEO4J_DATABASE,
             url=NEO4J_URI,
         )
-        print(f"✅ Connected to Neo4j at {NEO4J_URI}")
+        print(f"Connected to Neo4j at {NEO4J_URI}")
     except Exception as exc:
-        print(f"❌ Could not connect to Neo4j at {NEO4J_URI}: {exc}")
+        print(f"Could not connect to Neo4j at {NEO4J_URI}: {exc}")
         graph = None
 else:
-    print("❌ Neo4j not available")
+    print("Neo4j not available")
 
-# ---------------------------------------------------------------------------
-# LLM Initialization - Prefer Gemini in local dev; otherwise OpenAI-compatible with fallback to Ollama
-# ---------------------------------------------------------------------------
 llm = None
 llm_transformer = None
 
@@ -109,9 +102,8 @@ except Exception:
 
 if try_gemini and GOOGLE_GENAI_AVAILABLE:
     try:
-        print("🔷 Initializing Gemini (ChatGoogleGenerativeAI) for local development")
-        model_name = GRAPH_LLM_MODEL  # allow override via GRAPH_LLM_MODEL
-        # If GRAPH_LLM_MODEL is not a Gemini name, fall back to GOOGLE_CHAT_MODEL
+        print("Initializing Gemini (ChatGoogleGenerativeAI) for local development")
+        model_name = GRAPH_LLM_MODEL
         if not isinstance(model_name, str) or not model_name.lower().startswith("gemini"):
             try:
                 from config import settings as _s
@@ -128,35 +120,35 @@ if try_gemini and GOOGLE_GENAI_AVAILABLE:
             print(f"Graph transformer initialized with {model_name} (Gemini)")
             initialized = True
     except Exception as exc:
-        print(f"⚠️  Gemini initialization failed: {exc}")
+        print(f"Gemini initialization failed: {exc}")
 
 # 2) Ollama path when URL suggests Ollama
 if not initialized and prefer_ollama and OLLAMA_AVAILABLE:
     try:
-        print(f"🟠 Falling back to ChatOllama at: {GRAPH_LLM_URL}")
+        print(f"Falling back to ChatOllama at: {GRAPH_LLM_URL}")
         llm = ChatOllama(
             base_url=GRAPH_LLM_URL,
             model=GRAPH_LLM_MODEL,
             temperature=0,
-            timeout=30,
+            timeout=90,
         )
         if GRAPH_TRANSFORMER_AVAILABLE:
             llm_transformer = LLMGraphTransformer(llm=llm)
             print(f"Graph transformer initialized with {GRAPH_LLM_MODEL} (Ollama)")
             initialized = True
     except Exception as exc:
-        print(f"⚠️  ChatOllama initialization failed: {exc}")
+        print(f"ChatOllama initialization failed: {exc}")
 
 if not initialized and OPENAI_AVAILABLE:
     try:
-        print(f"🔷 Initializing ChatOpenAI (OpenAI-compatible) at: {GRAPH_LLM_URL}")
+        print(f"Initializing ChatOpenAI (OpenAI-compatible) at: {GRAPH_LLM_URL}")
         # Add a sensible client timeout and no retries to avoid hanging indefinitely
         llm = ChatOpenAI(
             base_url=f"{GRAPH_LLM_URL}/v1",
             api_key="lm-studio",  # placeholder key for LM Studio / compatible servers
             model=GRAPH_LLM_MODEL,
             temperature=0,
-            timeout=30,
+            timeout=90,
             max_retries=0,
         )
         if GRAPH_TRANSFORMER_AVAILABLE:
@@ -164,12 +156,12 @@ if not initialized and OPENAI_AVAILABLE:
             print(f"Graph transformer initialized with {GRAPH_LLM_MODEL} (OpenAI-compatible)")
             initialized = True
     except Exception as exc:
-        print(f"⚠️  ChatOpenAI initialization failed: {exc}")
+        print(f"ChatOpenAI initialization failed: {exc}")
 
 # Fallback to Ollama if available and not initialized yet
 if not initialized and OLLAMA_AVAILABLE:
     try:
-        print(f"🟠 Falling back to ChatOllama at: {GRAPH_LLM_URL}")
+        print(f"Falling back to ChatOllama at: {GRAPH_LLM_URL}")
         llm = ChatOllama(
             base_url=GRAPH_LLM_URL,
             model=GRAPH_LLM_MODEL,
@@ -181,10 +173,10 @@ if not initialized and OLLAMA_AVAILABLE:
             print(f"Graph transformer initialized with {GRAPH_LLM_MODEL} (Ollama)")
             initialized = True
     except Exception as exc:
-        print(f"⚠️  ChatOllama initialization failed: {exc}")
+        print(f"ChatOllama initialization failed: {exc}")
 
 if not initialized:
-    print("❌ No LLM initialized for graph transformation")
+    print("No LLM initialized for graph transformation")
 
 
 __all__ = [

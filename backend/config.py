@@ -100,8 +100,8 @@ class Settings(BaseSettings):
     SUMMARY_LLM_MODEL: str = os.getenv("SUMMARY_LLM_MODEL", "gemma3:1b")
     
     GRAPH_LLM_HOST: str = os.getenv("GRAPH_LLM_HOST", "10.0.2.4")
-    GRAPH_LLM_PORT: int = int(os.getenv("GRAPH_LLM_PORT", "8000"))
-    GRAPH_LLM_MODEL: str = os.getenv("GRAPH_LLM_MODEL", "google/gemma-3-4b-it")
+    GRAPH_LLM_PORT: int = int(os.getenv("GRAPH_LLM_PORT", "11434"))
+    GRAPH_LLM_MODEL: str = os.getenv("GRAPH_LLM_MODEL", "gemma3:4b")
     
     CHAT_LLM_HOST: str = os.getenv("CHAT_LLM_HOST", "localhost")
     CHAT_LLM_PORT: int = int(os.getenv("CHAT_LLM_PORT", "11436"))

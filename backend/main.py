@@ -141,10 +141,10 @@ if Neo4jGraph:
             database = settings.NEO4J_DATABASE
         )
     except Exception as e:
-        print(f"❌ Failed to connect to Neo4j in main.py: {e}")
+        print(f"Failed to connect to Neo4j in main.py: {e}")
         graph = None
 else:
-    print("⚠️ Neo4j is not installed, graph API will not function.")
+    print("Neo4j is not installed, graph API will not function.")
     graph = None
 
 # --- START: NEW SECURITY DEPENDENCIES FOR ADMIN & MANAGER ---
@@ -940,178 +940,153 @@ async def get_document_translation(
 @app.get(f"{settings.API_PREFIX}/jobs/{{job_id:path}}/graph")
 async def get_job_graph(
     job_id: str,
-    document_ids: Optional[str] = Query(None),  # comma-separated document IDs
+    document_ids: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Get combined knowledge graph from Neo4j for all documents in a job (or selected documents)"""
+    """Get combined knowledge graph from Neo4j for all documents in a job"""
     
-    # 1. Check if job exists and user has access (from SQL)
+    print(f"📊 GET /graph called for job: {job_id}")
+    
+    # 1. Check access (same as before)
     job = db.query(models.ProcessingJob).filter(
         models.ProcessingJob.id == job_id
     ).first()
     
     if not job:
         raise HTTPException(404, "Job not found")
-
     if not user_has_job_access(current_user, job):
-        raise HTTPException(status_code=403, detail="Insufficient permissions for this job")
-    
+        raise HTTPException(403, "Insufficient permissions")
     if not graph:
         raise HTTPException(500, "Graph database is not connected")
 
-    # 2. Get document IDs - either selected ones or all for this job
+    # 2. Get document IDs (same as before)
     if document_ids:
-        # Parse selected document IDs
-        try:
-            selected_ids = [int(id.strip()) for id in document_ids.split(',') if id.strip()]
-        except ValueError:
-            raise HTTPException(400, "Invalid document_ids format")
-        
-        # Verify these documents belong to the job and user has access
+        selected_ids = [int(id.strip()) for id in document_ids.split(',') if id.strip()]
         doc_ids = db.query(models.Document.id).filter(
             models.Document.job_id == job_id,
             models.Document.id.in_(selected_ids)
         ).all()
     else:
-        # Get all documents for this job
         doc_ids = db.query(models.Document.id).filter(
             models.Document.job_id == job_id
         ).all()
     
-    # Convert list of tuples to list of strings
     document_ids_list = [str(doc_id[0]) for doc_id in doc_ids]
-
+    
     if not document_ids_list:
-        return {"nodes": [], "relationships": []} # No documents, empty graph
+        return {"nodes": [], "relationships": []}
 
-    # 3. Query Neo4j for nodes and relationships matching these document IDs
-    # This query fetches:
-    # - All entities with matching document_ids
-    # - Document nodes matching the document_ids
-    # - User nodes that own these documents (via OWNS relationship)
-    # - All relationships between entities
-    # - OWNS and CONTAINS_ENTITY relationships
-    cypher_query = """
-    // Get Document nodes
-    MATCH (doc:Document)
-    WHERE doc.document_id IN $doc_ids
+    # 3. ✅ UPDATED QUERY - Return labels directly in Cypher
+    nodes_query = """
+    MATCH (n)
+    WHERE n.document_id IN $doc_ids
+      AND NOT 'Document' IN labels(n)
+      AND NOT 'User' IN labels(n)
+    RETURN n.id as id, 
+           CASE 
+             WHEN size(labels(n)) > 1 THEN labels(n)[1]
+             ELSE labels(n)[0]
+           END as type,
+           labels(n) as all_labels,
+           properties(n) as properties
+    """
     
-    // Get User nodes that own these documents
-    OPTIONAL MATCH (user:User)-[:OWNS]->(doc)
-    
-    // Get entities in these documents
-    OPTIONAL MATCH (doc)-[:CONTAINS_ENTITY]->(entity)
-    
-    // Get relationships between entities
-    OPTIONAL MATCH (entity)-[rel]-(other)
-    WHERE other.document_id IN $doc_ids OR other:Document OR other:User
-    
-    // Return everything
-    WITH collect(DISTINCT doc) as docs, 
-         collect(DISTINCT user) as users, 
-         collect(DISTINCT entity) as entities,
-         collect(DISTINCT rel) as rels
-    
-    UNWIND (docs + users + entities) AS node
-    WITH collect(DISTINCT node) as all_nodes, rels
-    
-    RETURN all_nodes, rels
+    relationships_query = """
+    MATCH (n)-[r]->(m)
+    WHERE n.document_id IN $doc_ids
+      AND m.document_id IN $doc_ids
+      AND NOT 'Document' IN labels(n)
+      AND NOT 'User' IN labels(n)
+      AND NOT 'Document' IN labels(m)
+      AND NOT 'User' IN labels(m)
+    RETURN n.id as source_id,
+           m.id as target_id,
+           type(r) as rel_type,
+           properties(r) as rel_properties
     """
     
     try:
-        result = graph.query(cypher_query, params={"doc_ids": document_ids_list})
+        print(f"Fetching nodes...")
+        nodes_result = graph.query(nodes_query, params={"doc_ids": document_ids_list})
+        
+        print(f"Fetching relationships...")
+        rels_result = graph.query(relationships_query, params={"doc_ids": document_ids_list})
+        
+        print(f"Query successful")
+        print(f"Nodes: {len(nodes_result)} records")
+        print(f"Relationships: {len(rels_result)} records")
+        
     except Exception as e:
-        print(f"❌ Neo4j query failed: {e}")
+        print(f"Neo4j query failed: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, f"Graph query failed: {str(e)}")
 
-    # 4. Format the Neo4j results into the JSON your frontend expects
+    # 4. UPDATED PROCESSING - Use data from Cypher directly
     nodes = {}
-    relationships = set()
-
-    for record in result:
-        all_nodes = record.get("all_nodes", [])
-        rels = record.get("rels", [])
-        
-        # Process nodes
-        for node in all_nodes:
-            if node is None:
-                continue
+    relationships = []
+    
+    # Process nodes - data is already extracted by Cypher
+    for record in nodes_result:
+        try:
+            node_id = record.get("id")
+            node_type = record.get("type")
+            node_props = record.get("properties", {})
+            all_labels = record.get("all_labels", [])
             
-            # Get node ID - for Document nodes use document_id, for User use username, otherwise use 'id'
-            node_labels = list(node.labels) if hasattr(node, 'labels') and node.labels else []
-            
-            if "Document" in node_labels:
-                node_id = node.get("document_id") or node.get("id") or str(id(node))
-                node_label = node.get("filename", node_id)
-            elif "User" in node_labels:
-                node_id = node.get("username") or str(id(node))
-                node_label = node_id
-            else:
-                node_id = node.get("id") or str(id(node))
-                node_label = node_id
-            
-            nodes[node_id] = {
-                "id": node_id,
-                "label": node_label,
-                "type": node_labels[0] if node_labels else "Node",
-                "properties": dict(node) if hasattr(node, '__iter__') else {}
-            }
-        
-        # Process relationships
-        for rel in rels:
-            if rel is None:
-                continue
-            
-            # Get source and target node IDs
-            start_node = rel.start_node if hasattr(rel, 'start_node') else None
-            end_node = rel.end_node if hasattr(rel, 'end_node') else None
-            
-            if not start_node or not end_node:
-                continue
-            
-            start_labels = list(start_node.labels) if hasattr(start_node, 'labels') and start_node.labels else []
-            end_labels = list(end_node.labels) if hasattr(end_node, 'labels') and end_node.labels else []
-            
-            # Get source ID
-            if "Document" in start_labels:
-                source_id = start_node.get("document_id") or start_node.get("id")
-            elif "User" in start_labels:
-                source_id = start_node.get("username")
-            else:
-                source_id = start_node.get("id")
-            
-            # Get target ID
-            if "Document" in end_labels:
-                target_id = end_node.get("document_id") or end_node.get("id")
-            elif "User" in end_labels:
-                target_id = end_node.get("username")
-            else:
-                target_id = end_node.get("id")
+            if node_id:
+                nodes[node_id] = {
+                    "id": node_id,
+                    "label": node_id,
+                    "type": node_type if node_type else "Entity",
+                    "properties": node_props if isinstance(node_props, dict) else {}
+                }
+                
+                # Debug: print each node type
+                print(f"Node: {node_id} -> Type: {node_type} (Labels: {all_labels})")
+                
+        except Exception as e:
+            print(f"Error processing node: {e}")
+            traceback.print_exc()
+            continue
+    
+    # Process relationships - data is already extracted by Cypher
+    for record in rels_result:
+        try:
+            source_id = record.get("source_id")
+            target_id = record.get("target_id")
+            rel_type = record.get("rel_type")
+            rel_props = record.get("rel_properties", {})
             
             if source_id and target_id:
-                rel_props = dict(rel.properties) if hasattr(rel, 'properties') else {}
-                relationships.add((
-                    source_id,
-                    target_id,
-                    rel.type if hasattr(rel, 'type') else "RELATED",
-                    tuple(rel_props.items())
-                ))
-
+                relationships.append({
+                    "source": source_id,
+                    "target": target_id,
+                    "type": rel_type if rel_type else "RELATED",
+                    "properties": rel_props if isinstance(rel_props, dict) else {}
+                })
+        except Exception as e:
+            print(f"Error processing relationship: {e}")
+            continue
+    
+    # Count unique types for debugging
+    unique_types = set(node["type"] for node in nodes.values())
+    print(f"\nReturning {len(nodes)} nodes and {len(relationships)} relationships")
+    print(f"Unique node types: {unique_types}")
+    
+    # Print sample data
+    if nodes:
+        sample_node = list(nodes.values())[0]
+        print(f"📝 Sample node: {sample_node}")
+    if relationships:
+        print(f"📝 Sample relationship: {relationships[0]}")
+    
     return {
         "nodes": list(nodes.values()),
-        "relationships": [
-            {
-                "source": source_id,
-                "target": target_id,
-                "type": rel_type,
-                "properties": dict(props)
-            }
-            for (source_id, target_id, rel_type, props) in relationships
-        ]
+        "relationships": relationships
     }
-
-
+    
 @app.post(f"{settings.API_PREFIX}/chat")
 async def chat_with_documents(
     message: str,

@@ -309,6 +309,7 @@ class DocumentProcessorService:
             
             print(f"Queuing for graph processing...")
             username = job.user.username if job.user else "unknown"
+            print(f"{document.id}")
             redis_pubsub.push_to_queue(settings.REDIS_QUEUE_GRAPH, {
                 "job_id": job.id,
                 "document_id": document.id,

@@ -3,6 +3,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from redis_pubsub import redis_pubsub
+from storage_config import storage_manager
 from gcs_storage import gcs_storage
 from config import settings
 from database import SessionLocal
@@ -94,10 +95,10 @@ class AudioProcessorService:
             # Check if all files in the job have been processed
             self._check_job_completion(db, job)
             
-            print(f"✅ Completed processing: {filename}")
+            print(f"Completed processing: {filename}")
             
         except Exception as e:
-            print(f"❌ Error processing file {filename}: {e}")
+            print(f"Error processing file {filename}: {e}")
             traceback.print_exc()
             # Don't mark job as failed for single file errors
         finally:
@@ -124,7 +125,7 @@ class AudioProcessorService:
                 return
             
             # List all audio files in GCS prefix
-            files = gcs_storage.list_files(gcs_prefix)
+            files = storage_manager.list_files(gcs_prefix)
             audio_files = [f for f in files if f.lower().endswith(
                 ('.mp3', '.wav', '.m4a')
             )]
@@ -194,7 +195,7 @@ class AudioProcessorService:
         
         # Download audio file to temp
         suffix = os.path.splitext(gcs_path)[1]
-        temp_file = gcs_storage.download_to_temp(gcs_path, suffix=suffix)
+        temp_file_path = storage_manager.download_to_temp(gcs_path, suffix=suffix)
         
         try:
             # Step 1: Transcription
@@ -202,7 +203,7 @@ class AudioProcessorService:
             
             if not transcription or not transcription.strip():
                 transcription = "[ No transcription available ]"
-                print(f"⚠️ Empty transcription for {filename}")
+                print(f"Empty transcription for {filename}")
             
             # Determine naming convention based on translation
             # == (two equal signs) for transcription + summary
@@ -211,8 +212,8 @@ class AudioProcessorService:
             
             # Save transcription to GCS with naming convention
             transcription_path = gcs_path + f'{equal_prefix}transcription.txt'
-            gcs_storage.upload_text(transcription, transcription_path)
-            print(f"✅ Transcription saved: {len(transcription)} characters")
+            storage_manager.upload_text(transcription, transcription_path)
+            print(f"Transcription saved: {len(transcription)} characters")
             
             # Step 2: Translation (if Hindi)
             translated_text_path = None
@@ -238,7 +239,7 @@ class AudioProcessorService:
                     
                     # Upload to GCS with three-equal-sign naming
                     translated_text_path = gcs_path + f'{equal_prefix}translated.txt'
-                    gcs_storage.upload_text(final_text, translated_text_path)
+                    storage_manager.upload_text(final_text, translated_text_path)
                     
                     # Cleanup
                     os.unlink(temp_trans.name)
@@ -255,7 +256,7 @@ class AudioProcessorService:
             
             # Save summary to GCS with naming convention
             summary_path = gcs_path + f'{equal_prefix}summary.txt'
-            gcs_storage.upload_text(summary, summary_path)
+            storage_manager.upload_text(summary, summary_path)
             
         finally:
             # Cleanup temp file

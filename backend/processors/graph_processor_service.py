@@ -57,37 +57,33 @@ class GraphProcessorService:
         gcs_text_path = message.get("gcs_text_path")
         username = message.get("username", "unknown")
         
-        print(f"📊 Graph Processor received job for document: {document_id}")
-        print(f"👤 Username: {username}")
-        print(f"⏱️  Starting graph processing at {time.strftime('%H:%M:%S')}")
+        print(f"Graph Processor received job for document: {document_id}")
+        print(f"Username: {username}")
+        print(f"Starting graph processing at {time.strftime('%H:%M:%S')}")
         
         db = SessionLocal()
         text = None
         try:
-            # Use the unified storage manager so we read from the same
-            # backend/path that the document processor wrote to.
             text = storage_manager.download_text(gcs_text_path)
         except Exception as e:
-            print(f"❌ Error downloading extracted text file: {gcs_text_path}")
-            print(f"   Exception: {repr(e)}")
-            print(f"   This likely means the document processor failed to process this file or GCS is unreachable.")
-            print(f"   Skipping graph processing for document {document_id}")
+            print(f"Error downloading extracted text file: {gcs_text_path}")
+            print(f"Exception: {repr(e)}")
+            print(f"This likely means the document processor failed to process this file or GCS is unreachable.")
+            print(f"Skipping graph processing for document {document_id}")
             return
         if not text or not text.strip():
-            print(f"❌ Extracted text for document {document_id} is empty or missing after download.")
-            print(f"   This likely means document processor produced no output or there was a storage issue.")
-            print(f"   Skipping graph processing for document {document_id}")
+            print(f"Extracted text for document {document_id} is empty or missing after download.")
+            print(f"This likely means document processor produced no output or there was a storage issue.")
+            print(f"Skipping graph processing for document {document_id}")
             return
         
         try:
-            # Limit text size for graph extraction
             max_chars = 5000
             if len(text) > max_chars:
                 text = text[:max_chars]
-                print(f"📏 Text truncated to {max_chars} chars for graph extraction")
+                print(f"Text truncated to {max_chars} chars for graph extraction")
             
-            # Build graph using LLM
-            print(f"🔗 Extracting entities and relationships...")
+            print(f"Extracting entities and relationships...")
             
             start_time = time.time()
             
@@ -99,20 +95,20 @@ class GraphProcessorService:
                 }
             )]
             
-            print(f"⏱️  Calling LLM for entity extraction...")
+            print(f"Calling LLM for entity extraction...")
             graph_documents = self.llm_transformer.convert_to_graph_documents(documents)
-            
+            print(f"{graph_documents}")
             extraction_time = time.time() - start_time
-            print(f"⏱️  Entity extraction took {extraction_time:.2f} seconds")
+            print(f"Entity extraction took {extraction_time:.2f} seconds")
             
             if not graph_documents:
-                print(f"⚠️  No graph documents generated")
+                print(f"No graph documents generated")
                 return
             
             nodes_count = len(graph_documents[0].nodes)
             relationships_count = len(graph_documents[0].relationships)
             
-            print(f"📈 Extracted {nodes_count} nodes and {relationships_count} relationships")
+            print(f"Extracted {nodes_count} nodes and {relationships_count} relationships")
             
             # Get document info
             document = db.query(models.Document).filter(
@@ -120,7 +116,7 @@ class GraphProcessorService:
             ).first()
             
             if not document:
-                print(f"❌ Document {document_id} not found")
+                print(f"Document {document_id} not found")
                 return
             
             # Store in Neo4j
@@ -128,10 +124,10 @@ class GraphProcessorService:
                 try:
                     self._sync_neo4j(job_id, document, graph_documents[0], username)
                 except Exception as exc:
-                    print(f"⚠️  Could not persist graph to Neo4j: {exc}")
+                    print(f"Could not persist graph to Neo4j: {exc}")
                     traceback.print_exc()
             else:
-                print("ℹ️  Neo4j graph unavailable; skipping graph persistence.")
+                print("Neo4j graph unavailable; skipping graph persistence.")
             
             # Store graph metadata in AlloyDB
             if document:
@@ -205,8 +201,8 @@ class GraphProcessorService:
                 db.commit()
             
             total_time = time.time() - job_start_time
-            print(f"✅ Graph building completed for document {document_id}")
-            print(f"⏱️  Total graph processing time: {total_time:.2f} seconds")
+            print(f"Graph building completed for document {document_id}")
+            print(f"Total graph processing time: {total_time:.2f} seconds")
             
             # Check if this was the last document to be processed for this job
             job = db.query(models.ProcessingJob).filter(models.ProcessingJob.id == job_id).first()
@@ -219,18 +215,18 @@ class GraphProcessorService:
                     models.Document.job_id == job_id
                 ).distinct().count()
                 
-                print(f"📊 Job {job_id}: {documents_with_graphs}/{job.total_files} documents have graphs")
+                print(f"Job {job_id}: {documents_with_graphs}/{job.total_files} documents have graphs")
                 
                 # If all files have been graph-processed, mark job as completed
                 if documents_with_graphs >= job.total_files:
                     job.status = models.JobStatus.COMPLETED
                     job.completed_at = datetime.now(timezone.utc)
                     db.commit()
-                    print(f"✅ Job {job_id} marked as COMPLETED")
-                    print(f"⏱️  Job completion latency from graph start: {total_time:.2f} seconds")
+                    print(f"Job {job_id} marked as COMPLETED")
+                    print(f"Job completion latency from graph start: {total_time:.2f} seconds")
             
         except Exception as e:
-            print(f"❌ Error in graph processor: {e}")
+            print(f"Error in graph processor: {e}")
             traceback.print_exc()
         finally:
             db.close()
@@ -250,7 +246,7 @@ class GraphProcessorService:
         if graph is None:
             return
         
-        print(f"📊 Syncing graph for document {document.id}: {len(graph_document.nodes)} nodes, {len(graph_document.relationships)} relationships")
+        print(f"Syncing graph for document {document.id}: {len(graph_document.nodes)} nodes, {len(graph_document.relationships)} relationships")
         
         # Step 1: Use LangChain's native graph.add_graph_documents() 
         try:
@@ -275,14 +271,14 @@ class GraphProcessorService:
                 baseEntityLabel=True,
                 include_source=True
             )
-            print(f"✅ Added graph documents to Neo4j using LangChain's native method")
+            print(f"Added graph documents to Neo4j using LangChain's native method")
             
         except Exception as e:
-            print(f"⚠️  Error using add_graph_documents: {e}")
+            print(f"Error using add_graph_documents: {e}")
             traceback.print_exc()
         
         # Step 2: Create/Merge User node
-        print(f"👤 Linking document to user: {username}")
+        print(f"Linking document to user: {username}")
         user_query = """
         MERGE (u:User {username: $username})
         ON CREATE SET u.created_at = datetime()
@@ -291,7 +287,7 @@ class GraphProcessorService:
         try:
             graph.query(user_query, {"username": username})
         except Exception as e:
-            print(f"⚠️  Error creating User node: {e}")
+            print(f"Error creating User node: {e}")
         
         # Step 3: Link User to Document with OWNS relationship
         link_query = """
@@ -312,9 +308,9 @@ class GraphProcessorService:
                     "job_id": job_id
                 }
             )
-            print(f"✅ Document successfully linked to user {username}")
+            print(f"Document successfully linked to user {username}")
         except Exception as e:
-            print(f"⚠️  Error linking document to user: {e}")
+            print(f"Error linking document to user: {e}")
         
         # Step 4: Link Document node to its entities (CONTAINS_ENTITY relationships)
         for node in graph_document.nodes:
@@ -338,7 +334,7 @@ class GraphProcessorService:
                 },
             )
             except Exception as e:
-                print(f"⚠️  Error linking entity {node.id} to document: {e}")
+                print(f"Error linking entity {node.id} to document: {e}")
         
         # Step 5: Entity resolution - create SHARES_ENTITY between documents
         entities_in_doc = graph.query(
@@ -374,14 +370,14 @@ class GraphProcessorService:
                 # This is expected for first document, silently continue
                 pass
         
-        print(f"✅ Neo4j sync complete for document {document.id}")
+        print(f"Neo4j sync complete for document {document.id}")
 
 
 def main():
     """Main entry point"""
-    print("🚀 Starting Graph Processor Service...")
-    print(f"📡 Using Redis Queue for true parallel processing")
-    print(f"👂 Listening to queue: {settings.REDIS_QUEUE_GRAPH}")
+    print("Starting Graph Processor Service...")
+    print(f"Using Redis Queue for true parallel processing")
+    print(f"Listening to queue: {settings.REDIS_QUEUE_GRAPH}")
     
     service = GraphProcessorService()
     

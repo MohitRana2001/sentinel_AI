@@ -4,13 +4,14 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from redis_pubsub import redis_pubsub
 from gcs_storage import gcs_storage
+from storage_config import storage_manager
 from config import settings
 from database import SessionLocal
 import models
 import traceback
 import tempfile
 from datetime import datetime, timezone, timedelta
-from moviepy.editor import VideoFileClip
+from moviepy import VideoFileClip
 import numpy as np
 import base64
 from langchain_openai import ChatOpenAI
@@ -25,13 +26,12 @@ SAVING_FRAMES_PER_SECOND = 0.3
 
 
 class VideoProcessorService:
-    """Service for processing video files using frame extraction and vision LLM"""
     
     def __init__(self):
         # Initialize LangChain OpenAI client pointing to local Gemma3:4b vision model
         self.vision_llm = ChatOpenAI(
             base_url=f"http://{settings.MULTIMODAL_LLM_HOST}:{settings.MULTIMODAL_LLM_PORT}/v1",
-            api_key="lm-studio",  # Can be any string for local models
+            api_key="lm-studio",
             model=settings.MULTIMODAL_LLM_MODEL,
             temperature=0
         )
@@ -141,7 +141,7 @@ class VideoProcessorService:
                 return
             
             # List all video files in GCS prefix
-            files = gcs_storage.list_files(gcs_prefix)
+            files = storage_manager.list_files(gcs_prefix)
             video_files = [f for f in files if f.lower().endswith(
                 ('.mp4', '.avi', '.mov')
             )]
@@ -316,7 +316,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         
         # Download video file to temp
         suffix = os.path.splitext(gcs_path)[1]
-        temp_video_file = gcs_storage.download_to_temp(gcs_path, suffix=suffix)
+        temp_video_file = storage_manager.download_to_temp(gcs_path, suffix=suffix)
         
         # Create temp directory for frames
         temp_frames_dir = tempfile.mkdtemp(prefix="video_frames_")
@@ -339,7 +339,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             
             # Save analysis to GCS with naming convention
             analysis_path = gcs_path + f'{equal_prefix}analysis.txt'
-            gcs_storage.upload_text(analysis, analysis_path)
+            storage_manager.upload_text(analysis, analysis_path)
             print(f"✅ Analysis saved: {len(analysis)} characters")
             
             # Step 3: Translation (if Hindi)
@@ -366,7 +366,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                     
                     # Upload to GCS with three-equal-sign naming
                     translated_text_path = gcs_path + f'{equal_prefix}translated.txt'
-                    gcs_storage.upload_text(final_text, translated_text_path)
+                    storage_manager.upload_text(final_text, translated_text_path)
                     
                     # Cleanup
                     os.unlink(temp_trans.name)
@@ -383,7 +383,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             
             # Save summary to GCS with naming convention
             summary_path = gcs_path + f'{equal_prefix}summary.txt'
-            gcs_storage.upload_text(summary, summary_path)
+            storage_manager.upload_text(summary, summary_path)
             
         finally:
             # Cleanup temp files

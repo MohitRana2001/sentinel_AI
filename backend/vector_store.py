@@ -69,7 +69,7 @@ class VectorStore:
         self,
         query: str,
         k: int = 5,
-        document_ids: List[int] = None,  # Changed from document_id to document_ids
+        document_ids: List[int] = None,
         job_id: str = None,
         user: Optional[models.User] = None
     ) -> List[Dict[str, Any]]:
@@ -83,7 +83,6 @@ class VectorStore:
                 print(f"Failed to embed query ({exc}). Using fallback keyword search.")
                 query_embedding = None
         
-        # Build query
         query_obj = self.db.query(models.DocumentChunk).join(models.Document).join(models.ProcessingJob)
 
         # Apply RBAC filtering

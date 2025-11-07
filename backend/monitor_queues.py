@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """
 Monitor Redis queues in real-time to diagnose queue issues
+
+Run from the backend directory: cd backend && python monitor_queues.py
+Or with Python module syntax: python -m backend.monitor_queues
 """
 import sys
+import os
 import time
+
+# Add backend directory to path for imports
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, backend_dir)
+
 from redis_pubsub import redis_pubsub
 from config import settings
 

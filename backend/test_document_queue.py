@@ -3,10 +3,14 @@
 Test script to simulate document upload and verify queue behavior
 
 Note: This is a standalone utility script, not a module.
-Run from anywhere: python backend/test_document_queue.py
+Run from the backend directory: cd backend && python test_document_queue.py
+Or with Python module syntax: python -m backend.test_document_queue
 """
 import sys
 import os
+import time
+import json
+import traceback
 
 # Add backend directory to path for imports
 # This allows running the script from any directory
@@ -15,8 +19,6 @@ sys.path.insert(0, backend_dir)
 
 from redis_pubsub import redis_pubsub
 from config import settings
-import time
-import json
 
 def test_document_queue_flow():
     """Test the complete flow of document queueing"""
@@ -121,7 +123,6 @@ def test_document_queue_flow():
             print(f"⚠️  No message received within timeout")
     except Exception as e:
         print(f"✗ Error consuming from queue: {e}")
-        import traceback
         traceback.print_exc()
         return
     

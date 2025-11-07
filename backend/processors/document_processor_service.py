@@ -27,7 +27,16 @@ class DocumentProcessorService:
         self.ollama_client = Client(host=settings.SUMMARY_LLM_URL)
     
     def process_job(self, message: dict):
-        """Process a job message from the Redis queue"""
+        """
+        Process a job message from the Redis queue
+        
+        Args:
+            message: Dictionary containing job information with required fields:
+                - action (str): Type of action, must be "process_file"
+                - job_id (str): Unique identifier for the job
+                - gcs_path (str): GCS path to the document file
+                - filename (str): Name of the file to process
+        """
         action = message.get("action", "process")
         job_id = message.get("job_id")
         

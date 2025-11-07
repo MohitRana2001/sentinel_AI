@@ -45,7 +45,9 @@ class RedisPubSub:
     def push_to_queue(self, queue_name: str, message: Dict[str, Any]) -> int:
         """Push message to Redis queue (LIST) for work distribution"""
         message_json = json.dumps(message)
-        return self.redis_client.lpush(queue_name, message_json)
+        queue_length = self.redis_client.lpush(queue_name, message_json)
+        print(f"🔵 Redis LPUSH: queue={queue_name}, new_length={queue_length}")
+        return queue_length
     
     def push_file_to_queue(self, job_id: str, gcs_path: str, filename: str, queue_name: str) -> int:
         """Push file to queue for parallel processing by multiple workers"""
@@ -101,6 +103,7 @@ class RedisPubSub:
                 
                 if result:
                     queue, message_data = result
+                    print(f"🟢 Redis BRPOP: queue={queue}, received message")
                     try:
                         # Decode if bytes
                         if isinstance(message_data, bytes):

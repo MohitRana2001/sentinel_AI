@@ -27,12 +27,16 @@ class DocumentProcessorService:
         self.ollama_client = Client(host=settings.SUMMARY_LLM_URL)
     
     def process_job(self, message: dict):
-
+        """Process a job message from the Redis queue"""
         action = message.get("action", "process")
         job_id = message.get("job_id")
         
+        print(f"📥 Received message from queue: action={action}, job_id={job_id}")
+        
         if action == "process_file":
             self._process_single_file(message)
+        else:
+            print(f"⚠️  Unknown action '{action}' - ignoring message")
     
     def _process_single_file(self, message: dict):
         job_id = message.get("job_id")
@@ -330,9 +334,14 @@ class DocumentProcessorService:
 
 def main():
     """Main entry point"""
+    print("=" * 80)
     print("Starting Document Processor Service...")
-    print(f"Using Redis Queue for true parallel processing")
-    print(f"Listening to queue: {settings.REDIS_QUEUE_DOCUMENT}")
+    print("=" * 80)
+    print(f"✓ Using Redis Queue for true parallel processing")
+    print(f"✓ Queue name: {settings.REDIS_QUEUE_DOCUMENT}")
+    print(f"✓ Redis host: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+    print("=" * 80)
+    print(f"\n👂 Listening for messages on queue: {settings.REDIS_QUEUE_DOCUMENT}\n")
     
     service = DocumentProcessorService()
     redis_pubsub.listen_queue(

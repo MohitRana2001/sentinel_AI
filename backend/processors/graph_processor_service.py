@@ -57,9 +57,10 @@ class GraphProcessorService:
         gcs_text_path = message.get("gcs_text_path")
         username = message.get("username", "unknown")
         
-        print(f"Graph Processor received job for document: {document_id}")
-        print(f"Username: {username}")
-        print(f"Starting graph processing at {time.strftime('%H:%M:%S')}")
+        print(f"📊 Graph Processor received job for document: {document_id}")
+        print(f"   └─ Job ID: {job_id}")
+        print(f"   └─ Username: {username}")
+        print(f"   └─ Time: {time.strftime('%H:%M:%S')}")
         
         db = SessionLocal()
         text = None
@@ -375,9 +376,14 @@ class GraphProcessorService:
 
 def main():
     """Main entry point"""
+    print("=" * 80)
     print("Starting Graph Processor Service...")
-    print(f"Using Redis Queue for true parallel processing")
-    print(f"Listening to queue: {settings.REDIS_QUEUE_GRAPH}")
+    print("=" * 80)
+    print(f"✓ Using Redis Queue for true parallel processing")
+    print(f"✓ Queue name: {settings.REDIS_QUEUE_GRAPH}")
+    print(f"✓ Redis host: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+    print("=" * 80)
+    print(f"\n👂 Listening for messages on queue: {settings.REDIS_QUEUE_GRAPH}\n")
     
     service = GraphProcessorService()
     

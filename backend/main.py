@@ -706,16 +706,19 @@ async def upload_documents(
         gcs_path = f"{gcs_prefix}{filename}"
         
         if file_type == 'document':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_DOCUMENT)
+            result = redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_DOCUMENT)
+            print(f"📤 Pushed to {settings.REDIS_QUEUE_DOCUMENT}: {filename} (queue length: {result})")
             messages_queued += 1
         elif file_type == 'audio':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_AUDIO)
+            result = redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_AUDIO)
+            print(f"📤 Pushed to {settings.REDIS_QUEUE_AUDIO}: {filename} (queue length: {result})")
             messages_queued += 1
         elif file_type == 'video':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO)
+            result = redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO)
+            print(f"📤 Pushed to {settings.REDIS_QUEUE_VIDEO}: {filename} (queue length: {result})")
             messages_queued += 1
     
-    print(f"Job {job_id} created and queued for processing ({messages_queued} messages in queue)")
+    print(f"✅ Job {job_id} created: {messages_queued} file(s) queued for processing")
     
     return {
         "job_id": job_id,

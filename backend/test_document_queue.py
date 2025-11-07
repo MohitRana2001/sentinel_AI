@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
 Test script to simulate document upload and verify queue behavior
+
+Note: This is a standalone utility script, not a module.
+Run from anywhere: python backend/test_document_queue.py
 """
 import sys
 import os
 
-# Add backend directory to path (works for multiple environments)
-backend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
-if os.path.exists(os.path.join(backend_dir, 'config.py')):
-    sys.path.insert(0, backend_dir)
-else:
-    # Fallback: try from current directory
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add backend directory to path for imports
+# This allows running the script from any directory
+backend_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, backend_dir)
 
 from redis_pubsub import redis_pubsub
 from config import settings
@@ -82,7 +82,7 @@ def test_document_queue_flow():
                 try:
                     parsed = json.loads(msg)
                     print(f"  {i}. action={parsed.get('action')}, filename={parsed.get('filename')}")
-                except (json.JSONDecodeError, TypeError) as e:
+                except json.JSONDecodeError as e:
                     print(f"  {i}. {msg[:100]}... (parse error: {e})")
         else:
             print(f"⚠️  Warning: Queue length did not increase!")

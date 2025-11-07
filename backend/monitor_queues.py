@@ -56,10 +56,9 @@ def monitor_queues():
                 try:
                     # PUBSUB NUMSUB returns number of subscribers
                     result = redis_pubsub.redis_client.pubsub_numsub(channel)
-                    if result:
-                        subscribers = result[0][1] if len(result) > 0 else 0
-                        status = "ACTIVE" if subscribers > 0 else "no subscribers"
-                        print(f"  {name:25s} ({channel:20s}): {status}")
+                    subscribers = result[0][1] if result else 0
+                    status = "ACTIVE" if subscribers > 0 else "no subscribers"
+                    print(f"  {name:25s} ({channel:20s}): {status}")
                 except Exception as e:
                     print(f"  {name:25s} ({channel:20s}): ERROR - {e}")
             

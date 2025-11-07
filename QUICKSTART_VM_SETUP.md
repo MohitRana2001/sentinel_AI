@@ -65,8 +65,12 @@ pip install -r requirements.txt
 ### 3. Configuration (5 minutes)
 
 ```bash
-# Copy configuration template
-cp /home/runner/work/sentinel_AI/sentinel_AI/config-templates/document-processor.env.template .env
+# Copy configuration template from repository
+# If you cloned the repo:
+cp ../config-templates/document-processor.env.template .env
+
+# Or create .env manually using the template as reference:
+# https://github.com/MohitRana2001/sentinel_AI/blob/main/config-templates/document-processor.env.template
 
 # Edit configuration
 nano .env
@@ -194,8 +198,12 @@ pip install -r requirements.txt
 ### 3. Configuration (5 minutes)
 
 ```bash
-# Copy configuration template
-cp /home/runner/work/sentinel_AI/sentinel_AI/config-templates/graph-processor.env.template .env
+# Copy configuration template from repository
+# If you cloned the repo:
+cp ../config-templates/graph-processor.env.template .env
+
+# Or create .env manually using the template as reference:
+# https://github.com/MohitRana2001/sentinel_AI/blob/main/config-templates/graph-processor.env.template
 
 # Edit configuration
 nano .env

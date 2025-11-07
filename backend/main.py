@@ -14,7 +14,8 @@ from database import get_db, init_db
 import models
 from models import RBACLevel 
 
-from gcs_storage import gcs_storage
+# Import new configurable storage system
+from storage_config import storage_manager
 from redis_pubsub import redis_pubsub
 from vector_store import VectorStore
 try:
@@ -140,10 +141,10 @@ if Neo4jGraph:
             database = settings.NEO4J_DATABASE
         )
     except Exception as e:
-        print(f"❌ Failed to connect to Neo4j in main.py: {e}")
+        print(f"Failed to connect to Neo4j in main.py: {e}")
         graph = None
 else:
-    print("⚠️ Neo4j is not installed, graph API will not function.")
+    print("Neo4j is not installed, graph API will not function.")
     graph = None
 
 # --- START: NEW SECURITY DEPENDENCIES FOR ADMIN & MANAGER ---
@@ -663,7 +664,7 @@ async def upload_documents(
     for file in files:
         try:
             gcs_path = f"{gcs_prefix}{file.filename}"
-            gcs_storage.upload_file(file.file, gcs_path)
+            storage_manager.upload_file(file.file, gcs_path)
             filenames.append(file.filename)
             
             ext = file.filename.split('.')[-1].lower()
@@ -850,7 +851,7 @@ async def get_document_summary(
         content = document.summary_text
     elif document.summary_path:
         try:
-            content = gcs_storage.download_text(document.summary_path)
+            content = storage_manager.download_text(document.summary_path)
         except:
             content = "Summary not available"
     else:
@@ -891,7 +892,7 @@ async def get_document_transcription(
         raise HTTPException(404, "Transcription not available for this document")
     
     try:
-        content = gcs_storage.download_text(text_path)
+        content = storage_manager.download_text(text_path)
     except Exception as e:
         print(f"❌ Error retrieving transcription: {e}")
         raise HTTPException(500, f"Failed to retrieve transcription: {str(e)}")
@@ -925,7 +926,7 @@ async def get_document_translation(
         raise HTTPException(404, "Translation not available for this document")
     
     try:
-        content = gcs_storage.download_text(document.translated_text_path)
+        content = storage_manager.download_text(document.translated_text_path)
     except:
         raise HTTPException(500, "Failed to retrieve translation")
     
@@ -939,113 +940,153 @@ async def get_document_translation(
 @app.get(f"{settings.API_PREFIX}/jobs/{{job_id:path}}/graph")
 async def get_job_graph(
     job_id: str,
-    document_ids: Optional[str] = Query(None),  # comma-separated document IDs
+    document_ids: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Get combined knowledge graph from Neo4j for all documents in a job (or selected documents)"""
+    """Get combined knowledge graph from Neo4j for all documents in a job"""
     
-    # 1. Check if job exists and user has access (from SQL)
+    print(f"📊 GET /graph called for job: {job_id}")
+    
+    # 1. Check access (same as before)
     job = db.query(models.ProcessingJob).filter(
         models.ProcessingJob.id == job_id
     ).first()
     
     if not job:
         raise HTTPException(404, "Job not found")
-
     if not user_has_job_access(current_user, job):
-        raise HTTPException(status_code=403, detail="Insufficient permissions for this job")
-    
+        raise HTTPException(403, "Insufficient permissions")
     if not graph:
         raise HTTPException(500, "Graph database is not connected")
 
-    # 2. Get document IDs - either selected ones or all for this job
+    # 2. Get document IDs (same as before)
     if document_ids:
-        # Parse selected document IDs
-        try:
-            selected_ids = [int(id.strip()) for id in document_ids.split(',') if id.strip()]
-        except ValueError:
-            raise HTTPException(400, "Invalid document_ids format")
-        
-        # Verify these documents belong to the job and user has access
+        selected_ids = [int(id.strip()) for id in document_ids.split(',') if id.strip()]
         doc_ids = db.query(models.Document.id).filter(
             models.Document.job_id == job_id,
             models.Document.id.in_(selected_ids)
         ).all()
     else:
-        # Get all documents for this job
         doc_ids = db.query(models.Document.id).filter(
             models.Document.job_id == job_id
         ).all()
     
-    # Convert list of tuples to list of strings
     document_ids_list = [str(doc_id[0]) for doc_id in doc_ids]
-
+    
     if not document_ids_list:
-        return {"nodes": [], "relationships": []} # No documents, empty graph
+        return {"nodes": [], "relationships": []}
 
-    # 3. Query Neo4j for nodes and relationships matching these document IDs
-    cypher_query = """
+    # 3. ✅ UPDATED QUERY - Return labels directly in Cypher
+    nodes_query = """
     MATCH (n)
     WHERE n.document_id IN $doc_ids
-    OPTIONAL MATCH (n)-[r]-(m)
-    WHERE m.document_id IN $doc_ids
-    RETURN n, r, m
+      AND NOT 'Document' IN labels(n)
+      AND NOT 'User' IN labels(n)
+    RETURN n.id as id, 
+           CASE 
+             WHEN size(labels(n)) > 1 THEN labels(n)[1]
+             ELSE labels(n)[0]
+           END as type,
+           labels(n) as all_labels,
+           properties(n) as properties
+    """
+    
+    relationships_query = """
+    MATCH (n)-[r]->(m)
+    WHERE n.document_id IN $doc_ids
+      AND m.document_id IN $doc_ids
+      AND NOT 'Document' IN labels(n)
+      AND NOT 'User' IN labels(n)
+      AND NOT 'Document' IN labels(m)
+      AND NOT 'User' IN labels(m)
+    RETURN n.id as source_id,
+           m.id as target_id,
+           type(r) as rel_type,
+           properties(r) as rel_properties
     """
     
     try:
-        result = graph.query(cypher_query, params={"doc_ids": document_ids_list})
+        print(f"Fetching nodes...")
+        nodes_result = graph.query(nodes_query, params={"doc_ids": document_ids_list})
+        
+        print(f"Fetching relationships...")
+        rels_result = graph.query(relationships_query, params={"doc_ids": document_ids_list})
+        
+        print(f"Query successful")
+        print(f"Nodes: {len(nodes_result)} records")
+        print(f"Relationships: {len(rels_result)} records")
+        
     except Exception as e:
-        print(f"❌ Neo4j query failed: {e}")
+        print(f"Neo4j query failed: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(500, f"Graph query failed: {str(e)}")
 
-    # 4. Format the Neo4j results into the JSON your frontend expects
+    # 4. UPDATED PROCESSING - Use data from Cypher directly
     nodes = {}
-    relationships = set()
-
-    for record in result:
-        node_n = record["n"]
-        rel = record["r"]
-        node_m = record["m"]
-
-        if node_n:
-            nodes[node_n.get("id")] = {
-                "id": node_n.get("id"),
-                "label": node_n.get("id"), # Use 'id' for label
-                "type": list(node_n.labels)[0] if node_n.labels else "Node",
-                "properties": dict(node_n)
-            }
-        
-        if node_m:
-            nodes[node_m.get("id")] = {
-                "id": node_m.get("id"),
-                "label": node_m.get("id"),
-                "type": list(node_m.labels)[0] if node_m.labels else "Node",
-                "properties": dict(node_m)
-            }
-
-        if rel:
-            relationships.add((
-                rel.start_node.get("id"), 
-                rel.end_node.get("id"),
-                rel.type,
-                tuple(rel.properties.items())
-            ))
-
+    relationships = []
+    
+    # Process nodes - data is already extracted by Cypher
+    for record in nodes_result:
+        try:
+            node_id = record.get("id")
+            node_type = record.get("type")
+            node_props = record.get("properties", {})
+            all_labels = record.get("all_labels", [])
+            
+            if node_id:
+                nodes[node_id] = {
+                    "id": node_id,
+                    "label": node_id,
+                    "type": node_type if node_type else "Entity",
+                    "properties": node_props if isinstance(node_props, dict) else {}
+                }
+                
+                # Debug: print each node type
+                print(f"Node: {node_id} -> Type: {node_type} (Labels: {all_labels})")
+                
+        except Exception as e:
+            print(f"Error processing node: {e}")
+            traceback.print_exc()
+            continue
+    
+    # Process relationships - data is already extracted by Cypher
+    for record in rels_result:
+        try:
+            source_id = record.get("source_id")
+            target_id = record.get("target_id")
+            rel_type = record.get("rel_type")
+            rel_props = record.get("rel_properties", {})
+            
+            if source_id and target_id:
+                relationships.append({
+                    "source": source_id,
+                    "target": target_id,
+                    "type": rel_type if rel_type else "RELATED",
+                    "properties": rel_props if isinstance(rel_props, dict) else {}
+                })
+        except Exception as e:
+            print(f"Error processing relationship: {e}")
+            continue
+    
+    # Count unique types for debugging
+    unique_types = set(node["type"] for node in nodes.values())
+    print(f"\nReturning {len(nodes)} nodes and {len(relationships)} relationships")
+    print(f"Unique node types: {unique_types}")
+    
+    # Print sample data
+    if nodes:
+        sample_node = list(nodes.values())[0]
+        print(f"📝 Sample node: {sample_node}")
+    if relationships:
+        print(f"📝 Sample relationship: {relationships[0]}")
+    
     return {
         "nodes": list(nodes.values()),
-        "relationships": [
-            {
-                "source": source_id,
-                "target": target_id,
-                "type": rel_type,
-                "properties": dict(props)
-            }
-            for (source_id, target_id, rel_type, props) in relationships
-        ]
+        "relationships": relationships
     }
-
-
+    
 @app.post(f"{settings.API_PREFIX}/chat")
 async def chat_with_documents(
     message: str,

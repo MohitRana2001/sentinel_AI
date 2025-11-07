@@ -1,13 +1,9 @@
-"""
-Audio/Video Processor Service
-Listens to Redis Pub/Sub for audio/video processing jobs
-Uses Gemini (dev mode) or Gemma3:12b multimodal LLM (production) for transcription
-"""
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from redis_pubsub import redis_pubsub
+from storage_config import storage_manager
 from gcs_storage import gcs_storage
 from config import settings
 from database import SessionLocal
@@ -18,27 +14,52 @@ import tempfile
 from datetime import datetime, timezone
 
 
-class AudioVideoProcessorService:
-    """Service for processing audio/video files"""
+class AudioProcessorService:
+    """Service for processing audio files"""
     
     def __init__(self):
         self.multimodal_client = Client(host=settings.MULTIMODAL_LLM_URL)
     
     def process_job(self, message: dict):
         """
-        Process audio/video files for a job
+        Process audio files for a job
         
-        Message format:
+        Message format (NEW - per-file):
+        {
+            "job_id": "uuid",
+            "gcs_path": "uploads/job-uuid/audio.mp3",
+            "filename": "audio.mp3",
+            "action": "process_file"
+        }
+        
+        Message format (OLD - per-job, for backward compatibility):
         {
             "job_id": "uuid",
             "gcs_prefix": "uploads/job-uuid/",
             "action": "process"
         }
         """
+        action = message.get("action", "process")
         job_id = message.get("job_id")
-        gcs_prefix = message.get("gcs_prefix")
         
-        print(f"🎬 Audio/Video Processor received job: {job_id}")
+        # Route to appropriate handler based on action
+        if action == "process_file":
+            # NEW: Process single file (parallel processing)
+            self._process_single_file(message)
+        else:
+            # OLD: Process all files in job (sequential, backward compatibility)
+            self._process_job_legacy(message)
+    
+    def _process_single_file(self, message: dict):
+        """
+        Process a single audio file (NEW parallel processing approach)
+        Includes distributed locking to prevent duplicate processing
+        """
+        job_id = message.get("job_id")
+        gcs_path = message.get("gcs_path")
+        filename = message.get("filename")
+        
+        print(f"🎵 Audio Processor received file: {filename} (job: {job_id})")
         
         db = SessionLocal()
         try:
@@ -51,70 +72,148 @@ class AudioVideoProcessorService:
                 print(f"❌ Job {job_id} not found")
                 return
             
-            # List all audio/video files in GCS prefix
-            files = gcs_storage.list_files(gcs_prefix)
-            media_files = [f for f in files if f.lower().endswith(
-                ('.mp3', '.wav', '.mp4', '.avi', '.mov', '.m4a')
-            )]
-            
-            print(f"📁 Found {len(media_files)} media files to process")
-            
-            for file_path in media_files:
-                try:
-                    self.process_media(db, job, file_path)
-                except Exception as e:
-                    print(f"❌ Error processing {file_path}: {e}")
-                    traceback.print_exc()
-            
-            print(f"✅ Media processing completed for job {job_id}")
-            
-            # Check if all files have been processed and mark job as completed
-            db.refresh(job)  # Reload job from database to get latest counts
-            if job.processed_files >= job.total_files:
-                job.status = models.JobStatus.COMPLETED
-                job.completed_at = datetime.now(timezone.utc)
+            # Update job status to PROCESSING if it's still QUEUED
+            if job.status == models.JobStatus.QUEUED:
+                job.status = models.JobStatus.PROCESSING
+                job.started_at = datetime.now(timezone.utc)
                 db.commit()
-                print(f"🎉 Job {job_id} marked as COMPLETED ({job.processed_files}/{job.total_files} files processed)")
+            
+            # Check if this file has already been processed (distributed lock)
+            existing_doc = db.query(models.Document).filter(
+                models.Document.job_id == job.id,
+                models.Document.original_filename == filename
+            ).first()
+            
+            if existing_doc and existing_doc.summary_path:
+                # File already processed by another worker
+                print(f"⏭️  File {filename} already processed by another worker, skipping")
+                return
+            
+            # Process this file
+            self.process_audio(db, job, gcs_path)
+            
+            # Check if all files in the job have been processed
+            self._check_job_completion(db, job)
+            
+            print(f"Completed processing: {filename}")
             
         except Exception as e:
-            print(f"❌ Error in audio/video processor: {e}")
+            print(f"Error processing file {filename}: {e}")
+            traceback.print_exc()
+            # Don't mark job as failed for single file errors
+        finally:
+            db.close()
+    
+    def _process_job_legacy(self, message: dict):
+        """
+        Process all audio files in a job sequentially (OLD approach for backward compatibility)
+        """
+        job_id = message.get("job_id")
+        gcs_prefix = message.get("gcs_prefix")
+        
+        print(f"🎵 Audio Processor received job (legacy): {job_id}")
+        
+        db = SessionLocal()
+        try:
+            # Get job from database
+            job = db.query(models.ProcessingJob).filter(
+                models.ProcessingJob.id == job_id
+            ).first()
+            
+            if not job:
+                print(f"Job {job_id} not found")
+                return
+            
+            # List all audio files in GCS prefix
+            files = storage_manager.list_files(gcs_prefix)
+            audio_files = [f for f in files if f.lower().endswith(
+                ('.mp3', '.wav', '.m4a')
+            )]
+            
+            print(f"Found {len(audio_files)} audio files to process")
+            
+            for file_path in audio_files:
+                try:
+                    self.process_audio(db, job, file_path)
+                except Exception as e:
+                    print(f"Error processing {file_path}: {e}")
+                    traceback.print_exc()
+            
+            print(f"✅ Audio processing completed for job {job_id}")
+            
+            # Check if all files have been processed
+            self._check_job_completion(db, job)
+            
+        except Exception as e:
+            print(f"Error in audio processor: {e}")
             traceback.print_exc()
         finally:
             db.close()
     
-    def process_media(self, db, job, gcs_path: str):
+    def _check_job_completion(self, db, job):
         """
-        Process a single audio/video file
+        Check if all files in the job have been processed
+        If yes, mark job as completed
+        """
+        # Count documents created for this job
+        documents_processed = db.query(models.Document).filter(
+            models.Document.job_id == job.id
+        ).count()
+        
+        print(f"📊 Job {job.id}: {documents_processed}/{job.total_files} files processed")
+        
+        # Only mark as completed if all files are done
+        if documents_processed >= job.total_files:
+            if job.status != models.JobStatus.COMPLETED:
+                job.status = models.JobStatus.COMPLETED
+                job.completed_at = datetime.now(timezone.utc)
+                db.commit()
+                print(f"✅ Job {job.id} marked as COMPLETED")
+        elif documents_processed > 0:
+            # Some files processed, ensure status is PROCESSING
+            if job.status == models.JobStatus.QUEUED:
+                job.status = models.JobStatus.PROCESSING
+                job.started_at = job.started_at or datetime.now(timezone.utc)
+                db.commit()
+    
+    def process_audio(self, db, job, gcs_path: str):
+        """
+        Process a single audio file
         
         Steps:
-        1. Download media from GCS
+        1. Download audio from GCS
         2. Transcribe using Gemini (dev) or Gemma3:12b (production)
         3. Detect language and translate if Hindi
         4. Save transcription and translation to GCS
         5. Generate summary
         6. Create document record
         """
-        print(f"🔄 Processing media: {gcs_path}")
+        print(f"🔄 Processing audio: {gcs_path}")
         
         filename = os.path.basename(gcs_path)
         is_hindi = 'hindi' in filename.lower()
         
-        # Download media file to temp
+        # Download audio file to temp
         suffix = os.path.splitext(gcs_path)[1]
-        temp_file = gcs_storage.download_to_temp(gcs_path, suffix=suffix)
+        temp_file_path = storage_manager.download_to_temp(gcs_path, suffix=suffix)
         
         try:
             # Step 1: Transcription
-            transcription = self.transcribe_media(temp_file, filename, is_hindi)
+            transcription = self.transcribe_audio(temp_file, filename, is_hindi)
             
             if not transcription or not transcription.strip():
                 transcription = "[ No transcription available ]"
-                print(f"⚠️ Empty transcription for {filename}")
+                print(f"Empty transcription for {filename}")
             
-            # Save transcription to GCS
-            transcription_path = gcs_path + '-transcription.txt'
-            gcs_storage.upload_text(transcription, transcription_path)
-            print(f"✅ Transcription saved: {len(transcription)} characters")
+            # Determine naming convention based on translation
+            # == (two equal signs) for transcription + summary
+            # === (three equal signs) for transcription + summary + translation
+            equal_prefix = "===" if is_hindi else "=="
+            
+            # Save transcription to GCS with naming convention
+            transcription_path = gcs_path + f'{equal_prefix}transcription.txt'
+            storage_manager.upload_text(transcription, transcription_path)
+            print(f"Transcription saved: {len(transcription)} characters")
             
             # Step 2: Translation (if Hindi)
             translated_text_path = None
@@ -138,9 +237,9 @@ class AudioVideoProcessorService:
                     with open(translated_path, 'r', encoding='utf-8') as f:
                         final_text = f.read()
                     
-                    # Upload to GCS
-                    translated_text_path = gcs_path + '-translated.txt'
-                    gcs_storage.upload_text(final_text, translated_text_path)
+                    # Upload to GCS with three-equal-sign naming
+                    translated_text_path = gcs_path + f'{equal_prefix}translated.txt'
+                    storage_manager.upload_text(final_text, translated_text_path)
                     
                     # Cleanup
                     os.unlink(temp_trans.name)
@@ -155,9 +254,9 @@ class AudioVideoProcessorService:
             print(f"📝 Generating summary...")
             summary = self.generate_summary(final_text)
             
-            # Save summary to GCS
-            summary_path = gcs_path + '-summary.txt'
-            gcs_storage.upload_text(summary, summary_path)
+            # Save summary to GCS with naming convention
+            summary_path = gcs_path + f'{equal_prefix}summary.txt'
+            storage_manager.upload_text(summary, summary_path)
             
         finally:
             # Cleanup temp file
@@ -167,12 +266,8 @@ class AudioVideoProcessorService:
         # Step 4: Create document record
         document = models.Document(
             job_id=job.id,
-            rbac_level=job.rbac_level,
-            station_id=job.station_id,
-            district_id=job.district_id,
-            state_id=job.state_id,
             original_filename=filename,
-            file_type=models.FileType.AUDIO if filename.lower().endswith(('.mp3', '.wav', '.m4a')) else models.FileType.VIDEO,
+            file_type=models.FileType.AUDIO,
             gcs_path=gcs_path,
             transcription_path=transcription_path,
             translated_text_path=translated_text_path,
@@ -198,12 +293,14 @@ class AudioVideoProcessorService:
         except Exception as e:
             print(f"⚠️ Vectorization failed: {e}")
         
-        # Step 6: Queue for graph processing
+        # Step 6: Push to graph processor queue
         print(f"📊 Queuing for graph processing...")
-        redis_pubsub.publish(settings.REDIS_CHANNEL_GRAPH, {
+        username = job.user.username if job.user else "unknown"
+        redis_pubsub.push_to_queue(settings.REDIS_QUEUE_GRAPH, {
             "job_id": job.id,
             "document_id": document.id,
-            "gcs_text_path": translated_text_path or transcription_path
+            "gcs_text_path": translated_text_path or transcription_path,
+            "username": username
         })
         
         # Update job progress
@@ -212,9 +309,9 @@ class AudioVideoProcessorService:
         
         print(f"✅ Completed processing: {filename}")
     
-    def transcribe_media(self, file_path: str, filename: str, is_hindi: bool = False) -> str:
+    def transcribe_audio(self, file_path: str, filename: str, is_hindi: bool = False) -> str:
         """
-        Transcribe audio/video file using Gemini (dev) or Gemma (production)
+        Transcribe audio file using Gemini (dev) or Gemma (production)
         """
         # ===== LOCAL DEV MODE: Use Gemini if configured =====
         try:
@@ -307,19 +404,15 @@ Summary:"""
 
 def main():
     """Main entry point"""
-    print("🚀 Starting Audio/Video Processor Service...")
-    print(f"📡 Listening to channels: {settings.REDIS_CHANNEL_AUDIO}, {settings.REDIS_CHANNEL_VIDEO}")
+    print("🚀 Starting Audio Processor Service...")
+    print(f"📡 Using Redis Queue for parallel processing")
+    print(f"👂 Listening to queue: {settings.REDIS_QUEUE_AUDIO}")
     
-    service = AudioVideoProcessorService()
+    service = AudioProcessorService()
     
-    # Listen to both audio and video channels
-    redis_pubsub.listen_async(
-        channel=settings.REDIS_CHANNEL_AUDIO,
-        callback=service.process_job
-    )
-    
-    redis_pubsub.listen(
-        channel=settings.REDIS_CHANNEL_VIDEO,
+    # Listen to audio queue (blocking)
+    redis_pubsub.listen_queue(
+        queue_name=settings.REDIS_QUEUE_AUDIO,
         callback=service.process_job
     )
 

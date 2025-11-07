@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from redis_pubsub import redis_pubsub
-from gcs_storage import gcs_storage
+from storage_config import storage_manager
 from config import settings
 from database import SessionLocal
 import models
@@ -15,6 +15,7 @@ from collections import defaultdict
 import unicodedata
 import re
 from datetime import datetime, timezone
+import time
 
 
 def _canonical(value: str) -> str:
@@ -45,69 +46,69 @@ class GraphProcessorService:
         {
             "job_id": "uuid",
             "document_id": 123,
-            "gcs_text_path": "path/to/text.txt"
+            "gcs_text_path": "path/to/text.txt",
+            "username": "user@example.com"
         }
         """
-        import time
         job_start_time = time.time()
         
         job_id = message.get("job_id")
         document_id = message.get("document_id")
         gcs_text_path = message.get("gcs_text_path")
+        username = message.get("username", "unknown")
         
-        print(f"📊 Graph Processor received job for document: {document_id}")
-        print(f"⏱️  Starting graph processing at {time.strftime('%H:%M:%S')}")
+        print(f"Graph Processor received job for document: {document_id}")
+        print(f"Username: {username}")
+        print(f"Starting graph processing at {time.strftime('%H:%M:%S')}")
         
         db = SessionLocal()
+        text = None
         try:
-            # Download text from GCS
-            text = gcs_storage.download_text(gcs_text_path)
-            
-            # Limit text size for graph extraction (reduced for better performance)
-            # Ollama is much slower than Gemini, so we use a smaller chunk
-            max_chars = 5000  # Reduced from 10000 for faster processing
+            text = storage_manager.download_text(gcs_text_path)
+        except Exception as e:
+            print(f"Error downloading extracted text file: {gcs_text_path}")
+            print(f"Exception: {repr(e)}")
+            print(f"This likely means the document processor failed to process this file or GCS is unreachable.")
+            print(f"Skipping graph processing for document {document_id}")
+            return
+        if not text or not text.strip():
+            print(f"Extracted text for document {document_id} is empty or missing after download.")
+            print(f"This likely means document processor produced no output or there was a storage issue.")
+            print(f"Skipping graph processing for document {document_id}")
+            return
+        
+        try:
+            max_chars = 5000
             if len(text) > max_chars:
                 text = text[:max_chars]
-                print(f"📏 Text truncated to {max_chars} chars for graph extraction")
+                print(f"Text truncated to {max_chars} chars for graph extraction")
             
-            # Build graph using existing logic
-            print(f"🔗 Extracting entities and relationships (this may take 30-60 seconds with Ollama)...")
+            print(f"Extracting entities and relationships...")
             
-            import time
             start_time = time.time()
             
-            documents = [Document(page_content=text, metadata={
-                "job_id": job_id,
-                "document_id": document_id
-            })]
+            documents = [Document(
+                page_content=text, 
+                metadata={
+                    "document_id": str(document_id),
+                    "job_id": job_id
+                }
+            )]
             
-            print(f"⏱️  Calling LLM for entity extraction...")
+            print(f"Calling LLM for entity extraction...")
             graph_documents = self.llm_transformer.convert_to_graph_documents(documents)
-            
+            print(f"{graph_documents}")
             extraction_time = time.time() - start_time
-            print(f"⏱️  Entity extraction took {extraction_time:.2f} seconds")
+            print(f"Entity extraction took {extraction_time:.2f} seconds")
             
             if not graph_documents:
-                print(f"⚠️  No graph documents generated")
+                print(f"No graph documents generated")
                 return
             
             nodes_count = len(graph_documents[0].nodes)
             relationships_count = len(graph_documents[0].relationships)
             
-            print(f"📈 Extracted {nodes_count} nodes and {relationships_count} relationships")
-            
-            # Add metadata to nodes and relationships
-            for node in graph_documents[0].nodes:
-                if not hasattr(node, 'properties'):
-                    node.properties = {}
-                node.properties['job_id'] = job_id
-                node.properties['document_id'] = document_id
-            
-            for rel in graph_documents[0].relationships:
-                if not hasattr(rel, 'properties'):
-                    rel.properties = {}
-                rel.properties['job_id'] = job_id
-                rel.properties['document_id'] = document_id
+            print(f"Extracted {nodes_count} nodes and {relationships_count} relationships")
             
             # Get document info
             document = db.query(models.Document).filter(
@@ -115,17 +116,18 @@ class GraphProcessorService:
             ).first()
             
             if not document:
-                print(f"❌ Document {document_id} not found")
+                print(f"Document {document_id} not found")
                 return
             
-            # Store in Neo4j when available
+            # Store in Neo4j
             if graph is not None:
                 try:
-                    self._sync_neo4j(job_id, document, graph_documents[0])
+                    self._sync_neo4j(job_id, document, graph_documents[0], username)
                 except Exception as exc:
-                    print(f"⚠️  Could not persist graph to Neo4j: {exc}")
+                    print(f"Could not persist graph to Neo4j: {exc}")
+                    traceback.print_exc()
             else:
-                print("ℹ️  Neo4j graph unavailable; skipping graph persistence.")
+                print("Neo4j graph unavailable; skipping graph persistence.")
             
             # Store graph metadata in AlloyDB
             if document:
@@ -199,8 +201,8 @@ class GraphProcessorService:
                 db.commit()
             
             total_time = time.time() - job_start_time
-            print(f"✅ Graph building completed for document {document_id}")
-            print(f"⏱️  Total graph processing time: {total_time:.2f} seconds")
+            print(f"Graph building completed for document {document_id}")
+            print(f"Total graph processing time: {total_time:.2f} seconds")
             
             # Check if this was the last document to be processed for this job
             job = db.query(models.ProcessingJob).filter(models.ProcessingJob.id == job_id).first()
@@ -213,18 +215,18 @@ class GraphProcessorService:
                     models.Document.job_id == job_id
                 ).distinct().count()
                 
-                print(f"📊 Job {job_id}: {documents_with_graphs}/{job.total_files} documents have graphs")
+                print(f"Job {job_id}: {documents_with_graphs}/{job.total_files} documents have graphs")
                 
                 # If all files have been graph-processed, mark job as completed
                 if documents_with_graphs >= job.total_files:
                     job.status = models.JobStatus.COMPLETED
                     job.completed_at = datetime.now(timezone.utc)
                     db.commit()
-                    print(f"✅ Job {job_id} marked as COMPLETED")
-                    print(f"⏱️  Job completion latency from graph start: {total_time:.2f} seconds")
+                    print(f"Job {job_id} marked as COMPLETED")
+                    print(f"Job completion latency from graph start: {total_time:.2f} seconds")
             
         except Exception as e:
-            print(f"❌ Error in graph processor: {e}")
+            print(f"Error in graph processor: {e}")
             traceback.print_exc()
         finally:
             db.close()
@@ -237,25 +239,23 @@ class GraphProcessorService:
             models.GraphRelationship.relationship_type == "CROSS_DOC_MATCH"
         ).first() is not None
 
-    def _sync_neo4j(self, job_id: str, document: models.Document, graph_document) -> None:
+    def _sync_neo4j(self, job_id: str, document: models.Document, graph_document, username: str) -> None:
         """
-        Sync graph to Neo4j using LangChain's native method + custom Document nodes.
-        This matches the working graph_builder.py approach.
+        Sync graph to Neo4j using LangChain's native method + User and Document nodes
         """
         if graph is None:
             return
         
-        print(f"📊 Syncing graph for document {document.id}: {len(graph_document.nodes)} nodes, {len(graph_document.relationships)} relationships")
+        print(f"Syncing graph for document {document.id}: {len(graph_document.nodes)} nodes, {len(graph_document.relationships)} relationships")
         
         # Step 1: Use LangChain's native graph.add_graph_documents() 
-        # This properly handles entity relationships like your working example
         try:
             # Add metadata to nodes for tracking
             for node in graph_document.nodes:
                 if not hasattr(node, 'properties') or node.properties is None:
                     node.properties = {}
                 node.properties['job_id'] = job_id
-                node.properties['document_id'] = document.id
+                node.properties['document_id'] = str(document.id)
                 node.properties['canonical_label'] = _canonical(node.id)
             
             # Add metadata to relationships
@@ -263,56 +263,80 @@ class GraphProcessorService:
                 if not hasattr(rel, 'properties') or rel.properties is None:
                     rel.properties = {}
                 rel.properties['job_id'] = job_id
-                rel.properties['document_id'] = document.id
+                rel.properties['document_id'] = str(document.id)
             
-            # Use LangChain's method (like your working example)
+            # Use LangChain's method with include_source=True to create Document nodes
             graph.add_graph_documents(
                 [graph_document],
-                baseEntityLabel=True,  # Creates proper base labels
-                include_source=True     # Links to source document
+                baseEntityLabel=True,
+                include_source=True
             )
-            print(f"✅ Added graph documents using LangChain's native method")
+            print(f"Added graph documents to Neo4j using LangChain's native method")
             
         except Exception as e:
-            print(f"⚠️  Error using add_graph_documents: {e}, falling back to manual method")
+            print(f"Error using add_graph_documents: {e}")
+            traceback.print_exc()
         
-        # Step 2: Create Document node (orange node as requested)
-        graph.query(
-            """
-            MERGE (d:Document {document_id:$document_id})
+        # Step 2: Create/Merge User node
+        print(f"Linking document to user: {username}")
+        user_query = """
+        MERGE (u:User {username: $username})
+        ON CREATE SET u.created_at = datetime()
+        SET u.updated_at = datetime()
+        """
+        try:
+            graph.query(user_query, {"username": username})
+        except Exception as e:
+            print(f"Error creating User node: {e}")
+        
+        # Step 3: Link User to Document with OWNS relationship
+        link_query = """
+        MERGE (u:User {username: $username})
+        MERGE (d:Document {document_id: $doc_id})
+        MERGE (u)-[r:OWNS]->(d)
             ON CREATE SET 
-                d.job_id = $job_id,
-                d.filename = $filename,
-                d.created_at = datetime()
-            SET d.updated_at = datetime()
-            """,
+            r.created_at = datetime(),
+            r.job_id = $job_id
+        SET r.updated_at = datetime()
+        """
+        try:
+            graph.query(
+                link_query, 
             {
-                "job_id": job_id,
-                "document_id": str(document.id),
-                "filename": document.original_filename,
-            },
-        )
+                    "username": username, 
+                    "doc_id": str(document.id),
+                    "job_id": job_id
+                }
+            )
+            print(f"Document successfully linked to user {username}")
+        except Exception as e:
+            print(f"Error linking document to user: {e}")
         
-        # Step 3: Link Document node to its entities
+        # Step 4: Link Document node to its entities (CONTAINS_ENTITY relationships)
         for node in graph_document.nodes:
             canonical = _canonical(node.id)
-            graph.query(
-                """
+            entity_link_query = """
                 MATCH (d:Document {document_id:$document_id})
                 MATCH (e) WHERE e.id = $entity_id OR e.canonical_label = $canonical
                 MERGE (d)-[r:CONTAINS_ENTITY]->(e)
                 ON CREATE SET r.created_at = datetime()
-                SET r.canonical_label = $canonical
-                """,
+            SET 
+                r.canonical_label = $canonical,
+                r.updated_at = datetime()
+            """
+            try:
+                graph.query(
+                    entity_link_query,
                 {
                     "document_id": str(document.id),
                     "entity_id": node.id,
                     "canonical": canonical,
                 },
             )
+            except Exception as e:
+                print(f"Error linking entity {node.id} to document: {e}")
         
-        # Step 4: Entity resolution - create SHARES_ENTITY between documents
-        # that have the same entities (cross-document links)
+        # Step 5: Entity resolution - create SHARES_ENTITY between documents
         entities_in_doc = graph.query(
             """
             MATCH (d:Document {document_id:$document_id})-[:CONTAINS_ENTITY]->(e)
@@ -325,8 +349,7 @@ class GraphProcessorService:
         for entity_record in entities_in_doc:
             canonical = entity_record["canonical"]
             # Find other documents with this entity
-            graph.query(
-                """
+            share_entity_query = """
                 MATCH (d1:Document {document_id:$document_id})
                 MATCH (e) WHERE COALESCE(e.canonical_label, toLower(replace(e.id, ' ', '-'))) = $canonical
                 MATCH (d2:Document)-[:CONTAINS_ENTITY]->(e)
@@ -334,21 +357,27 @@ class GraphProcessorService:
                 MERGE (d1)-[r:SHARES_ENTITY {entity_canonical:$canonical}]->(d2)
                 ON CREATE SET r.created_at = datetime()
                 SET r.updated_at = datetime()
-                """,
+            """
+            try:
+                graph.query(
+                    share_entity_query,
                 {
                     "document_id": str(document.id),
                     "canonical": canonical,
                 },
             )
+            except Exception as e:
+                # This is expected for first document, silently continue
+                pass
         
-        print(f"✅ Neo4j sync complete for document {document.id}")
+        print(f"Neo4j sync complete for document {document.id}")
 
 
 def main():
     """Main entry point"""
-    print("🚀 Starting Graph Processor Service...")
-    print(f"📡 Using Redis Queue for true parallel processing")
-    print(f"👂 Listening to queue: {settings.REDIS_QUEUE_GRAPH}")
+    print("Starting Graph Processor Service...")
+    print(f"Using Redis Queue for true parallel processing")
+    print(f"Listening to queue: {settings.REDIS_QUEUE_GRAPH}")
     
     service = GraphProcessorService()
     

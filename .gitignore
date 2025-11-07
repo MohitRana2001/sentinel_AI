@@ -48,3 +48,7 @@ backend/venv/
 
 .ipynb_checkpoints/
 .local_gcs/
+
+.local_storage/
+dlt/
+libraries/

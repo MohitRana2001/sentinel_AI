@@ -3,31 +3,48 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from redis_pubsub import redis_pubsub
+from gcs_storage import gcs_storage
 from storage_config import storage_manager
 from config import settings
 from database import SessionLocal
 import models
-from ollama import Client
 import traceback
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from moviepy import VideoFileClip
+import numpy as np
+import base64
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
+import glob
+import shutil
 
 
-class AudioVideoProcessorService:
-    """Service for processing audio/video files"""
+# Frame extraction rate: 0.3 frames per second = 1 frame every ~3 seconds
+SAVING_FRAMES_PER_SECOND = 0.3
+
+
+class VideoProcessorService:
     
     def __init__(self):
-        self.multimodal_client = Client(host=settings.MULTIMODAL_LLM_URL)
+        # Initialize LangChain OpenAI client pointing to local Gemma3:4b vision model
+        self.vision_llm = ChatOpenAI(
+            base_url=f"http://{settings.MULTIMODAL_LLM_HOST}:{settings.MULTIMODAL_LLM_PORT}/v1",
+            api_key="lm-studio",
+            model=settings.MULTIMODAL_LLM_MODEL,
+            temperature=0
+        )
     
     def process_job(self, message: dict):
         """
-        Process audio/video files for a job
+        Process video files for a job
         
         Message format (NEW - per-file):
         {
             "job_id": "uuid",
-            "gcs_path": "uploads/job-uuid/audio.mp3",
-            "filename": "audio.mp3",
+            "gcs_path": "uploads/job-uuid/video.mp4",
+            "filename": "video.mp4",
             "action": "process_file"
         }
         
@@ -51,14 +68,14 @@ class AudioVideoProcessorService:
     
     def _process_single_file(self, message: dict):
         """
-        Process a single media file (NEW parallel processing approach)
+        Process a single video file (NEW parallel processing approach)
         Includes distributed locking to prevent duplicate processing
         """
         job_id = message.get("job_id")
         gcs_path = message.get("gcs_path")
         filename = message.get("filename")
         
-        print(f"🎬 Audio/Video Processor received file: {filename} (job: {job_id})")
+        print(f"🎬 Video Processor received file: {filename} (job: {job_id})")
         
         db = SessionLocal()
         try:
@@ -89,7 +106,7 @@ class AudioVideoProcessorService:
                 return
             
             # Process this file
-            self.process_media(db, job, gcs_path)
+            self.process_video(db, job, gcs_path)
             
             # Check if all files in the job have been processed
             self._check_job_completion(db, job)
@@ -105,12 +122,12 @@ class AudioVideoProcessorService:
     
     def _process_job_legacy(self, message: dict):
         """
-        Process all media files in a job sequentially (OLD approach for backward compatibility)
+        Process all video files in a job sequentially (OLD approach for backward compatibility)
         """
         job_id = message.get("job_id")
         gcs_prefix = message.get("gcs_prefix")
         
-        print(f"🎬 Audio/Video Processor received job (legacy): {job_id}")
+        print(f"🎬 Video Processor received job (legacy): {job_id}")
         
         db = SessionLocal()
         try:
@@ -123,28 +140,28 @@ class AudioVideoProcessorService:
                 print(f"Job {job_id} not found")
                 return
             
-            # List all audio/video files in storage prefix
+            # List all video files in GCS prefix
             files = storage_manager.list_files(gcs_prefix)
-            media_files = [f for f in files if f.lower().endswith(
-                ('.mp3', '.wav', '.mp4', '.avi', '.mov', '.m4a')
+            video_files = [f for f in files if f.lower().endswith(
+                ('.mp4', '.avi', '.mov')
             )]
             
-            print(f"Found {len(media_files)} media files to process")
+            print(f"Found {len(video_files)} video files to process")
             
-            for file_path in media_files:
+            for file_path in video_files:
                 try:
-                    self.process_media(db, job, file_path)
+                    self.process_video(db, job, file_path)
                 except Exception as e:
                     print(f"Error processing {file_path}: {e}")
                     traceback.print_exc()
             
-            print(f"✅ Media processing completed for job {job_id}")
+            print(f"✅ Video processing completed for job {job_id}")
             
             # Check if all files have been processed
             self._check_job_completion(db, job)
             
         except Exception as e:
-            print(f"Error in audio/video processor: {e}")
+            print(f"Error in video processor: {e}")
             traceback.print_exc()
         finally:
             db.close()
@@ -175,57 +192,168 @@ class AudioVideoProcessorService:
                 job.started_at = job.started_at or datetime.now(timezone.utc)
                 db.commit()
     
-    def process_media(self, db, job, gcs_path: str):
+    def format_timedelta(self, td):
         """
-        Process a single audio/video file
+        Utility function to format timedelta objects (e.g 00:00:20.05)
+        omitting microseconds and retaining milliseconds
+        """
+        result = str(td)
+        try:
+            result, ms = result.split(".")
+        except ValueError:
+            return (result + ".00").replace(":", "-")
+        ms = int(ms)
+        ms = round(ms / 1e4)
+        return f"{result}.{ms:02}".replace(":", "-")
+    
+    def extract_frames(self, video_file_path: str, output_folder: str) -> list:
+        """
+        Extract frames from video at specified rate
+        Returns list of frame file paths
+        """
+        print(f"🎞️  Extracting frames from video...")
+        
+        # Load the video clip
+        video_clip = VideoFileClip(video_file_path)
+        
+        # Create output folder if it doesn't exist
+        if not os.path.isdir(output_folder):
+            os.makedirs(output_folder)
+        
+        # If the SAVING_FRAMES_PER_SECOND is above video FPS, then set it to FPS (as maximum)
+        saving_frames_per_second = min(video_clip.fps, SAVING_FRAMES_PER_SECOND)
+        
+        # If SAVING_FRAMES_PER_SECOND is set to 0, step is 1/fps, else 1/SAVING_FRAMES_PER_SECOND
+        step = 1 / video_clip.fps if saving_frames_per_second == 0 else 1 / saving_frames_per_second
+        
+        frame_paths = []
+        
+        # Iterate over each possible frame
+        for current_duration in np.arange(0, video_clip.duration, step):
+            # Format the file name and save it
+            frame_duration_formatted = self.format_timedelta(timedelta(seconds=current_duration))
+            frame_filename = os.path.join(output_folder, f"frame{frame_duration_formatted}.jpg")
+            
+            # Save the frame with the current duration
+            video_clip.save_frame(frame_filename, current_duration)
+            frame_paths.append(frame_filename)
+        
+        video_clip.close()
+        
+        print(f"✅ Extracted {len(frame_paths)} frames from video")
+        return frame_paths
+    
+    def analyze_video_frames(self, frame_folder_path: str) -> str:
+        """
+        Analyze video frames using vision LLM
+        Returns comprehensive analysis of the video content
+        """
+        print(f"🔍 Analyzing video frames with vision LLM...")
+        
+        # Prepare image content for LangChain
+        chat_content = []
+        images = sorted(glob.glob(f"{frame_folder_path}/*.jpg"))
+        
+        if not images:
+            print(f"⚠️ No frames found in {frame_folder_path}")
+            return "No frames available for analysis"
+        
+        print(f"📷 Processing {len(images)} frames...")
+        
+        # Encode all frames as base64 images
+        for image_path in images:
+            with open(image_path, "rb") as image_file:
+                encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
+                content_dict = {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{encoded_string}"}
+                }
+                chat_content.append(content_dict)
+        
+        # Create prompt with system context for CCTV footage analysis
+        prompt_with_multiple_images = ChatPromptTemplate.from_messages([
+            ("system", """You are a policeman, analysing CCTV footages. Instead of a full video, you have frame captures from a CCTV video provided. 1 frame is captured every 3 seconds. Analyse these set of images and give an overall description of what the video contains from which these frame captures were done.
+
+Focus on:
+- People present (number, appearance, activities)
+- Vehicles (types, colors, movements)
+- Location characteristics
+- Activities and events
+- Timeline of events
+- Any suspicious or noteworthy activities
+- Overall scene description
+
+Provide a comprehensive analysis that a law enforcement officer would find useful."""),
+            HumanMessage(content=chat_content),
+        ])
+        
+        # Invoke the LLM chain
+        chain_with_multiple_images = prompt_with_multiple_images | self.vision_llm
+        response = chain_with_multiple_images.invoke({})
+        
+        analysis = response.content
+        print(f"✅ Video analysis completed: {len(analysis)} characters")
+        
+        return analysis
+    
+    def process_video(self, db, job, gcs_path: str):
+        """
+        Process a single video file
         
         Steps:
-        1. Download media from GCS
-        2. Transcribe using Gemini (dev) or Gemma3:12b (production)
-        3. Detect language and translate if Hindi
-        4. Save transcription and translation to GCS
-        5. Generate summary
-        6. Create document record
+        1. Download video from GCS
+        2. Extract frames at 0.3 fps (1 frame every ~3 seconds)
+        3. Analyze frames using vision LLM
+        4. Detect language and translate if Hindi
+        5. Save analysis and translation to GCS
+        6. Generate summary
+        7. Create document record
         """
-        print(f"🔄 Processing media: {gcs_path}")
+        print(f"🔄 Processing video: {gcs_path}")
         
         filename = os.path.basename(gcs_path)
         is_hindi = 'hindi' in filename.lower()
         
-        # Download media file to temp
+        # Download video file to temp
         suffix = os.path.splitext(gcs_path)[1]
-        temp_file = storage_manager.download_to_temp(gcs_path, suffix=suffix)
+        temp_video_file = storage_manager.download_to_temp(gcs_path, suffix=suffix)
+        
+        # Create temp directory for frames
+        temp_frames_dir = tempfile.mkdtemp(prefix="video_frames_")
         
         try:
-            # Step 1: Transcription
-            transcription = self.transcribe_media(temp_file, filename, is_hindi)
+            # Step 1: Extract frames from video
+            frame_paths = self.extract_frames(temp_video_file, temp_frames_dir)
             
-            if not transcription or not transcription.strip():
-                transcription = "[ No transcription available ]"
-                print(f"⚠️ Empty transcription for {filename}")
+            # Step 2: Analyze frames using vision LLM
+            analysis = self.analyze_video_frames(temp_frames_dir)
+            
+            if not analysis or not analysis.strip():
+                analysis = "[ No analysis available ]"
+                print(f"⚠️ Empty analysis for {filename}")
             
             # Determine naming convention based on translation
-            # == (two equal signs) for transcription + summary
-            # === (three equal signs) for transcription + summary + translation
+            # == (two equal signs) for analysis + summary
+            # === (three equal signs) for analysis + summary + translation
             equal_prefix = "===" if is_hindi else "=="
             
-            # Save transcription to storage with naming convention
-            transcription_path = gcs_path + f'{equal_prefix}transcription.txt'
-            storage_manager.upload_text(transcription, transcription_path)
-            print(f"✅ Transcription saved: {len(transcription)} characters")
+            # Save analysis to GCS with naming convention
+            analysis_path = gcs_path + f'{equal_prefix}analysis.txt'
+            storage_manager.upload_text(analysis, analysis_path)
+            print(f"✅ Analysis saved: {len(analysis)} characters")
             
-            # Step 2: Translation (if Hindi)
+            # Step 3: Translation (if Hindi)
             translated_text_path = None
-            final_text = transcription
+            final_text = analysis
             
-            if is_hindi and transcription != "[ No transcription available ]":
-                print(f"🌐 Translating transcription from Hindi...")
+            if is_hindi and analysis != "[ No analysis available ]":
+                print(f"🌐 Translating analysis from Hindi...")
                 try:
                     from document_processor import translate
                     
-                    # Save transcription to temp file for translation
+                    # Save analysis to temp file for translation
                     temp_trans = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8')
-                    temp_trans.write(transcription)
+                    temp_trans.write(analysis)
                     temp_trans.close()
                     
                     # Translate
@@ -236,7 +364,7 @@ class AudioVideoProcessorService:
                     with open(translated_path, 'r', encoding='utf-8') as f:
                         final_text = f.read()
                     
-                    # Upload to storage with three-equal-sign naming
+                    # Upload to GCS with three-equal-sign naming
                     translated_text_path = gcs_path + f'{equal_prefix}translated.txt'
                     storage_manager.upload_text(final_text, translated_text_path)
                     
@@ -249,26 +377,28 @@ class AudioVideoProcessorService:
                     print(f"⚠️ Translation failed: {e}")
                     # Continue without translation
             
-            # Step 3: Summarization
+            # Step 4: Summarization
             print(f"📝 Generating summary...")
             summary = self.generate_summary(final_text)
             
-            # Save summary to storage with naming convention
+            # Save summary to GCS with naming convention
             summary_path = gcs_path + f'{equal_prefix}summary.txt'
             storage_manager.upload_text(summary, summary_path)
             
         finally:
-            # Cleanup temp file
-            if os.path.exists(temp_file):
-                os.unlink(temp_file)
+            # Cleanup temp files
+            if os.path.exists(temp_video_file):
+                os.unlink(temp_video_file)
+            if os.path.exists(temp_frames_dir):
+                shutil.rmtree(temp_frames_dir)
         
-        # Step 4: Create document record
+        # Step 5: Create document record
         document = models.Document(
             job_id=job.id,
             original_filename=filename,
-            file_type=models.FileType.AUDIO if filename.lower().endswith(('.mp3', '.wav', '.m4a')) else models.FileType.VIDEO,
+            file_type=models.FileType.VIDEO,
             gcs_path=gcs_path,
-            transcription_path=transcription_path,
+            transcription_path=analysis_path,  # Store analysis in transcription_path
             translated_text_path=translated_text_path,
             summary_path=summary_path,
             summary_text=summary[:1000] if summary else ""
@@ -277,8 +407,8 @@ class AudioVideoProcessorService:
         db.commit()
         db.refresh(document)
         
-        # Step 5: Vectorize the text
-        print(f"🔢 Creating embeddings from transcription...")
+        # Step 6: Vectorize the text
+        print(f"🔢 Creating embeddings from video analysis...")
         try:
             from vector_store import vectorise_and_store_alloydb
             # Delete existing chunks for this document
@@ -288,17 +418,17 @@ class AudioVideoProcessorService:
             db.commit()
             # Vectorize the final text (translated if Hindi, original if English)
             vectorise_and_store_alloydb(db, document.id, final_text, summary)
-            print(f"✅ Embeddings created for audio transcription")
+            print(f"✅ Embeddings created for video analysis")
         except Exception as e:
             print(f"⚠️ Vectorization failed: {e}")
         
-        # Step 6: Push to graph processor queue
+        # Step 7: Push to graph processor queue
         print(f"📊 Queuing for graph processing...")
         username = job.user.username if job.user else "unknown"
         redis_pubsub.push_to_queue(settings.REDIS_QUEUE_GRAPH, {
             "job_id": job.id,
             "document_id": document.id,
-            "gcs_text_path": translated_text_path or transcription_path,
+            "gcs_text_path": translated_text_path or analysis_path,
             "username": username
         })
         
@@ -308,63 +438,9 @@ class AudioVideoProcessorService:
         
         print(f"✅ Completed processing: {filename}")
     
-    def transcribe_media(self, file_path: str, filename: str, is_hindi: bool = False) -> str:
-        """
-        Transcribe audio/video file using Gemini (dev) or Gemma (production)
-        """
-        # ===== LOCAL DEV MODE: Use Gemini if configured =====
-        try:
-            if settings.USE_GEMINI_FOR_DEV and settings.GEMINI_API_KEY:
-                print(f"🔷 Using Gemini API for transcription (LOCAL DEV MODE)")
-                import google.generativeai as genai
-                
-                # Configure Gemini
-                genai.configure(api_key=settings.GEMINI_API_KEY)
-                
-                # Use Gemini 2.0 Flash which supports audio
-                model = genai.GenerativeModel('gemini-2.0-flash-exp')
-                
-                # Upload audio file
-                print(f"📤 Uploading audio file to Gemini...")
-                audio_file = genai.upload_file(file_path)
-                print(f"✅ Audio file uploaded")
-                
-                # Create transcription prompt
-                lang_hint = "Hindi (Devanagari script)" if is_hindi else "English"
-                prompt = f"""Please transcribe this audio file accurately.
-The audio is in {lang_hint}.
-Provide the complete transcription with proper punctuation and formatting.
-Only output the transcription text, no additional commentary."""
-                
-                # Generate transcription
-                print(f"🎤 Transcribing audio...")
-                response = model.generate_content([prompt, audio_file])
-                transcription = response.text.strip()
-                
-                # Delete the uploaded file
-                audio_file.delete()
-                
-                print(f"✅ Gemini transcription completed: {len(transcription)} characters")
-                return transcription
-                
-        except (ImportError, AttributeError) as e:
-            print(f"⚠️ Gemini not configured, falling back to placeholder: {e}")
-        except Exception as e:
-            print(f"⚠️ Gemini transcription error: {e}")
-            import traceback
-            traceback.print_exc()
-        
-        # ===== PRODUCTION MODE: Use Gemma3:12b multimodal =====
-        print(f"🔧 Using Gemma3:12b multimodal for transcription (PRODUCTION MODE)")
-        print(f"⚠️ Multimodal LLM integration not yet implemented")
-        
-        # TODO: Implement Gemma3:12b multimodal transcription
-        # For now, return a placeholder
-        return f"[ Audio transcription pending - Gemma3:12b multimodal integration required ]\nFile: {filename}"
-    
     def generate_summary(self, text: str) -> str:
         """
-        Generate summary of transcribed text using Gemini (dev) or Gemma (production)
+        Generate summary of video analysis using Gemini (dev) or Gemma (production)
         """
         if not text or text.startswith("[ "):
             return "No summary available"
@@ -382,44 +458,38 @@ Only output the transcription text, no additional commentary."""
         except Exception as e:
             print(f"⚠️ Gemini summary error: {e}")
         
-        # ===== PRODUCTION MODE: Use Ollama =====
-        print(f"🔧 Using Ollama for summarization (PRODUCTION MODE)")
+        # ===== PRODUCTION MODE: Use local LLM =====
+        print(f"🔧 Using local LLM for summarization (PRODUCTION MODE)")
         try:
-            prompt = f"""Summarize the following transcribed audio in 200 words or less:
+            from ollama import Client
+            client = Client(host=settings.SUMMARY_LLM_URL)
+            
+            prompt = f"""Summarize the following video analysis in 200 words or less:
 
 {text[:5000]}
 
 Summary:"""
             
-            response = self.multimodal_client.chat(
+            response = client.chat(
                 model=settings.SUMMARY_LLM_MODEL,
                 messages=[{'role': 'user', 'content': prompt}],
             )
             return response['message']['content'].strip()
         except Exception as e:
-            print(f"⚠️ Ollama summary error: {e}")
+            print(f"⚠️ Summary generation error: {e}")
             return "Summary generation failed"
 
 
 def main():
     """Main entry point"""
-    print("🚀 Starting Audio/Video Processor Service...")
-    print(f"📡 Using Redis Queues for true parallel processing")
-    print(f"👂 Listening to queues: {settings.REDIS_QUEUE_AUDIO}, {settings.REDIS_QUEUE_VIDEO}")
+    print("🚀 Starting Video Processor Service...")
+    print(f"📡 Using Redis Queue for parallel processing")
+    print(f"🎬 Frame extraction rate: {SAVING_FRAMES_PER_SECOND} fps (1 frame every ~{1/SAVING_FRAMES_PER_SECOND:.1f} seconds)")
+    print(f"👂 Listening to queue: {settings.REDIS_QUEUE_VIDEO}")
     
-    service = AudioVideoProcessorService()
+    service = VideoProcessorService()
     
-    # Listen to both audio and video queues
-    # Audio queue in background thread
-    import threading
-    audio_thread = threading.Thread(
-        target=redis_pubsub.listen_queue,
-        args=(settings.REDIS_QUEUE_AUDIO, service.process_job),
-        daemon=True
-    )
-    audio_thread.start()
-    
-    # Video queue in main thread (blocking)
+    # Listen to video queue (blocking)
     redis_pubsub.listen_queue(
         queue_name=settings.REDIS_QUEUE_VIDEO,
         callback=service.process_job

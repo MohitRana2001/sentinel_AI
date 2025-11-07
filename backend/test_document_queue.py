@@ -4,7 +4,14 @@ Test script to simulate document upload and verify queue behavior
 """
 import sys
 import os
-sys.path.insert(0, '/home/runner/work/sentinel_AI/sentinel_AI/backend')
+
+# Add backend directory to path (works for multiple environments)
+backend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+if os.path.exists(os.path.join(backend_dir, 'config.py')):
+    sys.path.insert(0, backend_dir)
+else:
+    # Fallback: try from current directory
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from redis_pubsub import redis_pubsub
 from config import settings
@@ -75,8 +82,8 @@ def test_document_queue_flow():
                 try:
                     parsed = json.loads(msg)
                     print(f"  {i}. action={parsed.get('action')}, filename={parsed.get('filename')}")
-                except:
-                    print(f"  {i}. {msg[:100]}...")
+                except (json.JSONDecodeError, TypeError) as e:
+                    print(f"  {i}. {msg[:100]}... (parse error: {e})")
         else:
             print(f"⚠️  Warning: Queue length did not increase!")
     except Exception as e:

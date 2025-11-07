@@ -677,9 +677,9 @@ async def upload_documents(
             else:
                 file_types.append('document')
             
-            print(f"Uploaded: {file.filename} to {gcs_path}")
+            print(f"✓ Uploaded: {file.filename} to {gcs_path} [type: {file_types[-1]}]")
         except Exception as e:
-            print(f"Error uploading {file.filename}: {e}")
+            print(f"✗ Error uploading {file.filename}: {e}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to upload {file.filename}: {str(e)}"
@@ -699,6 +699,10 @@ async def upload_documents(
     db.commit()
     db.refresh(job)
     
+    print(f"\n📋 Queueing {len(filenames)} file(s) for processing:")
+    for fname, ftype in zip(filenames, file_types):
+        print(f"   - {fname} [{ftype}]")
+    
     # Push per-file messages to Redis queues for true parallel processing
     # Each file gets its own message in a queue, distributed to available workers
     messages_queued = 0
@@ -717,8 +721,10 @@ async def upload_documents(
             result = redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO)
             print(f"📤 Pushed to {settings.REDIS_QUEUE_VIDEO}: {filename} (queue length: {result})")
             messages_queued += 1
+        else:
+            print(f"⚠️  Skipping file (unknown type): {filename} [{file_type}]")
     
-    print(f"✅ Job {job_id} created: {messages_queued} file(s) queued for processing")
+    print(f"✅ Job {job_id} created: {messages_queued} file(s) queued for processing\n")
     
     return {
         "job_id": job_id,

@@ -10,6 +10,15 @@ This repository contains comprehensive documentation for setting up and managing
 
 ### Core Setup Guides
 
+0. **[MINIMAL_FILES_FOR_VMs.md](./MINIMAL_FILES_FOR_VMs.md)** 📦 **NEW!**
+   - **Purpose**: Deploy without cloning the entire repository
+   - **Best for**: Minimal footprint, production deployments
+   - **Contains**: 
+     - Exact list of required files for each service
+     - Download scripts to fetch only necessary files
+     - Minimal dependency lists (~500MB vs ~2GB)
+     - File-by-file breakdown with GitHub URLs
+
 1. **[QUICKSTART_VM_SETUP.md](./QUICKSTART_VM_SETUP.md)** ⚡
    - **Purpose**: Get both VMs running quickly (~1 hour)
    - **Best for**: First-time setup, rapid deployment
@@ -71,6 +80,11 @@ This repository contains comprehensive documentation for setting up and managing
    - Copy to `.env` and fill in your values
 
 ## 🎯 Quick Navigation
+
+### I don't want to clone the entire repository
+→ **START HERE**: [MINIMAL_FILES_FOR_VMs.md](./MINIMAL_FILES_FOR_VMs.md) for minimal file deployment
+→ Download only 16 files for Document Processor or 13 files for Graph Processor
+→ Install only required dependencies (~500MB vs ~2GB)
 
 ### I'm new to this project
 → Start with [VM_INTEGRATION_ARCHITECTURE.md](./VM_INTEGRATION_ARCHITECTURE.md) to understand the system

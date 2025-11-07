@@ -2,6 +2,8 @@
 
 This guide provides a streamlined path to set up the Document and Graph Processor VMs. For detailed explanations, refer to the full setup guides.
 
+> **📦 Minimal File Deployment**: If you don't want to clone the entire repository, see **[MINIMAL_FILES_FOR_VMs.md](./MINIMAL_FILES_FOR_VMs.md)** for instructions to download only the required files for each service.
+
 ## Prerequisites Checklist
 
 Before starting, ensure you have:
@@ -21,6 +23,8 @@ Before starting, ensure you have:
 - [ ] Service account key for GCS (if using GCS)
 
 ## Document Processor VM - Quick Setup
+
+> **Note**: For minimal file deployment without cloning, see [MINIMAL_FILES_FOR_VMs.md](./MINIMAL_FILES_FOR_VMs.md)
 
 ### 1. Initial Setup (5 minutes)
 
@@ -43,6 +47,8 @@ export TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata/
 
 ### 2. Application Setup (10 minutes)
 
+**Option A: Full Repository Clone**
+
 ```bash
 # Create application directory
 sudo mkdir -p /opt/sentinel_ai
@@ -60,6 +66,14 @@ source ../venv/bin/activate
 # Install dependencies
 pip install --upgrade pip
 pip install -r requirements.txt
+```
+
+**Option B: Minimal Files (No git clone - See MINIMAL_FILES_FOR_VMs.md)**
+
+```bash
+# Download only required files using script from MINIMAL_FILES_FOR_VMs.md
+# Installs ~500MB vs ~2GB with full repo
+# 16 files vs 100+ files
 ```
 
 ### 3. Configuration (5 minutes)
@@ -160,6 +174,8 @@ tail -f /var/log/sentinel_ai/document-processor.log
 
 ## Graph Processor VM - Quick Setup
 
+> **Note**: For minimal file deployment without cloning, see [MINIMAL_FILES_FOR_VMs.md](./MINIMAL_FILES_FOR_VMs.md)
+
 ### 1. Initial Setup (5 minutes)
 
 ```bash
@@ -175,6 +191,8 @@ sudo apt install -y build-essential curl wget git python3 python3-pip python3-ve
 ```
 
 ### 2. Application Setup (10 minutes)
+
+**Option A: Full Repository Clone**
 
 ```bash
 # Create application directory
@@ -193,6 +211,14 @@ source ../venv/bin/activate
 # Install dependencies
 pip install --upgrade pip
 pip install -r requirements.txt
+```
+
+**Option B: Minimal Files (No git clone - See MINIMAL_FILES_FOR_VMs.md)**
+
+```bash
+# Download only required files using script from MINIMAL_FILES_FOR_VMs.md
+# Installs ~400MB vs ~2GB with full repo
+# 13 files vs 100+ files
 ```
 
 ### 3. Configuration (5 minutes)

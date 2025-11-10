@@ -12,6 +12,12 @@ from ollama import Client
 import traceback
 import tempfile
 from datetime import datetime, timezone
+import torch
+import soundfile as sf
+import nemo.collections.asr as nemo_asr
+import numpy as np
+import langid
+import time
 
 
 class AudioProcessorService:
@@ -19,6 +25,8 @@ class AudioProcessorService:
     
     def __init__(self):
         self.multimodal_client = Client(host=settings.MULTIMODAL_LLM_URL)
+        self.nemo_model = None  # Lazy load NeMo model
+        self.nemo_device = None
     
     def process_job(self, message: dict):
         """
@@ -182,11 +190,13 @@ class AudioProcessorService:
         
         Steps:
         1. Download audio from GCS
-        2. Transcribe using Gemini (dev) or Gemma3:12b (production)
-        3. Detect language and translate if Hindi
-        4. Save transcription and translation to GCS
-        5. Generate summary
-        6. Create document record
+        2. Transcribe using NeMo/Gemini (dev) or Gemma3:12b (production)
+        3. Detect language and translate if needed
+        4. Rewrite text for consistency
+        5. Save transcription and translation to GCS
+        6. Generate summary
+        7. Create document record
+        8. Vectorize and store in database
         """
         print(f"🔄 Processing audio: {gcs_path}")
         
@@ -199,28 +209,40 @@ class AudioProcessorService:
         
         try:
             # Step 1: Transcription
-            transcription = self.transcribe_audio(temp_file, filename, is_hindi)
+            transcription = self.transcribe_audio(temp_file_path, filename, is_hindi)
             
             if not transcription or not transcription.strip():
                 transcription = "[ No transcription available ]"
                 print(f"Empty transcription for {filename}")
             
+            # Step 2: Detect language if not already known
+            detected_language = None
+            if transcription != "[ No transcription available ]":
+                try:
+                    language_info = langid.classify(transcription)
+                    detected_language = language_info[0]
+                    print(f"🔍 Detected language: {detected_language}")
+                except Exception as e:
+                    print(f"⚠️ Language detection failed: {e}")
+                    detected_language = 'hi' if is_hindi else 'en'
+            
             # Determine naming convention based on translation
             # == (two equal signs) for transcription + summary
             # === (three equal signs) for transcription + summary + translation
-            equal_prefix = "===" if is_hindi else "=="
+            needs_translation = detected_language and detected_language != 'en'
+            equal_prefix = "===" if needs_translation else "=="
             
             # Save transcription to GCS with naming convention
             transcription_path = gcs_path + f'{equal_prefix}transcription.txt'
             storage_manager.upload_text(transcription, transcription_path)
             print(f"Transcription saved: {len(transcription)} characters")
             
-            # Step 2: Translation (if Hindi)
+            # Step 3: Translation (if not English)
             translated_text_path = None
             final_text = transcription
             
-            if is_hindi and transcription != "[ No transcription available ]":
-                print(f"🌐 Translating transcription from Hindi...")
+            if needs_translation and transcription != "[ No transcription available ]":
+                print(f"🌐 Translating transcription from {detected_language} to English...")
                 try:
                     from document_processor import translate
                     
@@ -231,7 +253,7 @@ class AudioProcessorService:
                     
                     # Translate
                     temp_dir = os.path.dirname(temp_trans.name)
-                    translated_path = translate(temp_dir, temp_trans.name)
+                    translated_path = translate(temp_dir, temp_trans.name, source_lang=detected_language)
                     
                     # Read translation
                     with open(translated_path, 'r', encoding='utf-8') as f:
@@ -248,9 +270,29 @@ class AudioProcessorService:
                     print(f"✅ Translation completed: {len(final_text)} characters")
                 except Exception as e:
                     print(f"⚠️ Translation failed: {e}")
+                    traceback.print_exc()
                     # Continue without translation
             
-            # Step 3: Summarization
+            # Step 4: Text rewriting for consistency (if translated or transcribed)
+            corrected_text_path = None
+            if final_text and final_text != "[ No transcription available ]":
+                print(f"✍️  Rewriting text for consistency...")
+                try:
+                    corrected_text = self.text_rewrite(final_text)
+                    
+                    # Upload corrected text to GCS
+                    corrected_text_path = gcs_path + f'{equal_prefix}corrected.txt'
+                    storage_manager.upload_text(corrected_text, corrected_text_path)
+                    
+                    # Use corrected text for final processing
+                    final_text = corrected_text
+                    print(f"✅ Text rewriting completed: {len(final_text)} characters")
+                except Exception as e:
+                    print(f"⚠️ Text rewriting failed: {e}")
+                    traceback.print_exc()
+                    # Continue with uncorrected text
+            
+            # Step 5: Summarization
             print(f"📝 Generating summary...")
             summary = self.generate_summary(final_text)
             
@@ -260,10 +302,10 @@ class AudioProcessorService:
             
         finally:
             # Cleanup temp file
-            if os.path.exists(temp_file):
-                os.unlink(temp_file)
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
         
-        # Step 4: Create document record
+        # Step 6: Create document record
         document = models.Document(
             job_id=job.id,
             original_filename=filename,
@@ -278,7 +320,7 @@ class AudioProcessorService:
         db.commit()
         db.refresh(document)
         
-        # Step 5: Vectorize the text
+        # Step 7: Vectorize the text
         print(f"🔢 Creating embeddings from transcription...")
         try:
             from vector_store import vectorise_and_store_alloydb
@@ -287,19 +329,19 @@ class AudioProcessorService:
                 models.DocumentChunk.document_id == document.id
             ).delete(synchronize_session=False)
             db.commit()
-            # Vectorize the final text (translated if Hindi, original if English)
+            # Vectorize the final text (corrected/translated if available, original if English)
             vectorise_and_store_alloydb(db, document.id, final_text, summary)
             print(f"✅ Embeddings created for audio transcription")
         except Exception as e:
             print(f"⚠️ Vectorization failed: {e}")
         
-        # Step 6: Push to graph processor queue
+        # Step 8: Push to graph processor queue
         print(f"📊 Queuing for graph processing...")
         username = job.user.username if job.user else "unknown"
         redis_pubsub.push_to_queue(settings.REDIS_QUEUE_GRAPH, {
             "job_id": job.id,
             "document_id": document.id,
-            "gcs_text_path": translated_text_path or transcription_path,
+            "gcs_text_path": corrected_text_path or translated_text_path or transcription_path,
             "username": username
         })
         
@@ -311,8 +353,19 @@ class AudioProcessorService:
     
     def transcribe_audio(self, file_path: str, filename: str, is_hindi: bool = False) -> str:
         """
-        Transcribe audio file using Gemini (dev) or Gemma (production)
+        Transcribe audio file using NeMo (if available), Gemini (dev) or Gemma (production)
         """
+        # ===== Try NeMo ASR first if available =====
+        try:
+            if os.getenv("USE_NEMO_ASR", "false").lower() == "true":
+                print(f"🔶 Attempting to use NeMo ASR for transcription")
+                transcription = self.transcribe_nemo(file_path)
+                if transcription:
+                    return transcription
+                print(f"⚠️ NeMo ASR failed, falling back to other methods")
+        except Exception as e:
+            print(f"⚠️ NeMo ASR error: {e}")
+        
         # ===== LOCAL DEV MODE: Use Gemini if configured =====
         try:
             if settings.USE_GEMINI_FOR_DEV and settings.GEMINI_API_KEY:
@@ -400,6 +453,104 @@ Summary:"""
         except Exception as e:
             print(f"⚠️ Ollama summary error: {e}")
             return "Summary generation failed"
+    
+    def transcribe_nemo(self, audio_file_path: str) -> str:
+        """
+        Transcribe audio file using NeMo ASR model
+        
+        Args:
+            audio_file_path: Path to the audio file
+            
+        Returns:
+            Transcribed text
+        """
+        try:
+            print(f"🎤 Transcribing audio using NeMo ASR model...")
+            
+            # Set up numpy types for compatibility
+            np.sctypes = {
+                "int": [np.int8, np.int16, np.int32, np.int64],
+                "uint": [np.uint8, np.uint16, np.uint32, np.uint64],
+                "float": [np.float16, np.float32, np.float64],
+                "complex": [np.complex64, np.complex128],
+            }
+            
+            # Initialize device and model (lazy loading)
+            if self.nemo_model is None:
+                self.nemo_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                print(f"Loading NeMo model on device: {self.nemo_device}")
+                
+                # Load NeMo model (assuming model file is available)
+                model_path = os.getenv("NEMO_MODEL_PATH", "indicconformer_stt_multi_hybrid_rnnt_600m.nemo")
+                if not os.path.exists(model_path):
+                    raise FileNotFoundError(f"NeMo model not found at {model_path}")
+                
+                self.nemo_model = nemo_asr.models.EncDecCTCModel.restore_from(restore_path=model_path)
+                self.nemo_model.eval()  # inference mode
+                self.nemo_model = self.nemo_model.to(self.nemo_device)  # transfer model to device
+                self.nemo_model.cur_decoder = "rnnt"
+                print(f"✅ NeMo model loaded successfully")
+            
+            # Transcribe audio
+            s = time.time()
+            transcription = self.nemo_model.transcribe(
+                [audio_file_path], 
+                batch_size=1, 
+                logprobs=False, 
+                language_id='hi'
+            )[0]
+            
+            print(f"✅ NeMo transcription completed in {(time.time() - s) * 1e3:.2f} ms")
+            return transcription
+            
+        except FileNotFoundError as e:
+            print(f"⚠️ NeMo model file not found: {e}")
+            return None
+        except Exception as e:
+            print(f"⚠️ NeMo transcription error: {e}")
+            traceback.print_exc()
+            return None
+    
+    def text_rewrite(self, text: str) -> str:
+        """
+        Rewrite transcribed/translated text to fix inconsistencies
+        
+        This function corrects grammatical errors, removes repetitions, and fixes
+        inconsistencies in text that was generated by transcription and translation.
+        
+        Args:
+            text: Text to rewrite
+            
+        Returns:
+            Rewritten text
+        """
+        try:
+            print(f"✍️  Rewriting text for consistency...")
+            
+            prompt = f'''Consider the text between the <summarise></summarise> tags. This text has been generated by first transcribing an audio file and then translating the content into english. Hence, this content may have incoherrent and illogical text. This may be grammatically incorrect or may have repititions etc. Please rewrite the content without losing any meanings such that the content is correct and free from any inconsistencies. Don't miss any information. Try and rewrite in about the same amount of words, as that of the original text. Also, please only return the converted text. Please don't add any comments from your side. Just return the converted text:
+    <summarise>{text}</summarise>"
+    '''
+            
+            s = time.time()
+            response = self.multimodal_client.chat(
+                model=settings.SUMMARY_LLM_MODEL,
+                messages=[
+                    {
+                        'role': 'user',
+                        'content': prompt,
+                    },
+                ],
+            )
+            
+            rewritten_text = response['message']['content'].strip()
+            print(f"✅ Text rewriting completed in {(time.time() - s) * 1e3:.2f} ms")
+            return rewritten_text
+            
+        except Exception as e:
+            print(f"⚠️ Text rewriting error: {e}")
+            traceback.print_exc()
+            # Return original text if rewriting fails
+            return text
 
 
 def main():

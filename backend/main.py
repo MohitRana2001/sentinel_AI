@@ -1134,12 +1134,26 @@ async def chat_with_documents(
             user=current_user
         )
 
+        # print(f"SIMILARITY SEARCH RESULTS: {len(results)} chunks found")
+        # if results:
+        #     print(f"First result: {results[0]}")
+        # else:
+        #     print(f"NO RESULTS - Checking database...")
+        #     from sqlalchemy import func
+        #     chunk_count = db.query(func.count(models.DocumentChunk.id)).scalar()
+        # print(f"Total chunks in database: {chunk_count}")
+        # if doc_id_list:
+        #     doc_chunk_count = db.query(func.count(models.DocumentChunk.id)).filter(
+        #         models.DocumentChunk.document_id.in_(doc_id_list)
+        #     ).scalar()
+        # print(f"Chunks for selected docs {doc_id_list}: {doc_chunk_count}")
+
         context = "\n\n".join([r["chunk_text"][:800] for r in results[:5]])
         
         # ===== LOCAL DEV MODE: Use Gemini if configured =====
         if settings.USE_GEMINI_FOR_DEV and settings.GEMINI_API_KEY:
             try:
-                print("🔷 Using Gemini for chat (LOCAL DEV MODE)")
+                print("Using Gemini for chat (LOCAL DEV MODE)")
                 agent = GoogleDocAgent(api_key=settings.GEMINI_API_KEY, model=settings.GOOGLE_CHAT_MODEL)
                 
                 enriched_chunks = []
@@ -1177,7 +1191,7 @@ async def chat_with_documents(
                     "mode": f"google-{settings.GOOGLE_CHAT_MODEL}"
                 }
             except Exception as agent_error:
-                print(f"⚠️  Gemini chat error, falling back to Ollama: {agent_error}")
+                print(f"Gemini chat error, falling back to Ollama: {agent_error}")
                 import traceback
                 traceback.print_exc()
 
@@ -1196,7 +1210,7 @@ async def chat_with_documents(
             full_context = "\n\n".join(context_with_sources)
             
             # Create RAG prompt
-            prompt = f"""You are a helpful assistant analyzing documents. Based on the following document excerpts, answer the user's question accurately and concisely.
+            prompt = f"""You are a helpful assistant analyzing documents. Based on the following document excerpts, answer the     user's question accurately and concisely.
 
 Document Excerpts:
 {full_context}
@@ -1231,7 +1245,7 @@ Please provide a clear and informative answer based only on the information in t
                 "mode": f"ollama-{settings.CHAT_LLM_MODEL}"
             }
         except Exception as ollama_error:
-            print(f"❌ Ollama chat error: {ollama_error}")
+            print(f"Ollama chat error: {ollama_error}")
             import traceback
             traceback.print_exc()
             
@@ -1242,7 +1256,7 @@ Please provide a clear and informative answer based only on the information in t
                 "mode": "context-only"
             }
     except Exception as e:
-        print(f"❌ Chat error: {e}")
+        print(f"Chat error: {e}")
         raise HTTPException(500, f"Chat failed: {str(e)}")
 
 

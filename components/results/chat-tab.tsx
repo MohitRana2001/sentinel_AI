@@ -48,7 +48,7 @@ export function ChatTab({
           : "your uploaded documents"
       }. Feel free to ask about summaries, translations, specific details, or relationships between documents.`,
       timestamp: new Date().toISOString(),
-      mode: "gemini-2.0-flash",
+      mode: "gemini-2.5-flash",
     },
   ]);
   const [inputValue, setInputValue] = useState("");

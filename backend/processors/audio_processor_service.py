@@ -24,19 +24,12 @@ class AudioProcessorService:
         """
         Process audio files for a job
         
-        Message format (NEW - per-file):
+        Message format (per-file):
         {
             "job_id": "uuid",
             "gcs_path": "uploads/job-uuid/audio.mp3",
             "filename": "audio.mp3",
             "action": "process_file"
-        }
-        
-        Message format (OLD - per-job, for backward compatibility):
-        {
-            "job_id": "uuid",
-            "gcs_prefix": "uploads/job-uuid/",
-            "action": "process"
         }
         """
         action = message.get("action", "process")
@@ -46,15 +39,8 @@ class AudioProcessorService:
         if action == "process_file":
             # NEW: Process single file (parallel processing)
             self._process_single_file(message)
-        else:
-            # OLD: Process all files in job (sequential, backward compatibility)
-            self._process_job_legacy(message)
     
     def _process_single_file(self, message: dict):
-        """
-        Process a single audio file (NEW parallel processing approach)
-        Includes distributed locking to prevent duplicate processing
-        """
         job_id = message.get("job_id")
         gcs_path = message.get("gcs_path")
         filename = message.get("filename")
@@ -69,7 +55,7 @@ class AudioProcessorService:
             ).first()
             
             if not job:
-                print(f"❌ Job {job_id} not found")
+                print(f"Job {job_id} not found")
                 return
             
             # Update job status to PROCESSING if it's still QUEUED
@@ -85,8 +71,7 @@ class AudioProcessorService:
             ).first()
             
             if existing_doc and existing_doc.summary_path:
-                # File already processed by another worker
-                print(f"⏭️  File {filename} already processed by another worker, skipping")
+                print(f"File {filename} already processed by another worker, skipping")
                 return
             
             # Process this file
@@ -104,52 +89,6 @@ class AudioProcessorService:
         finally:
             db.close()
     
-    def _process_job_legacy(self, message: dict):
-        """
-        Process all audio files in a job sequentially (OLD approach for backward compatibility)
-        """
-        job_id = message.get("job_id")
-        gcs_prefix = message.get("gcs_prefix")
-        
-        print(f"🎵 Audio Processor received job (legacy): {job_id}")
-        
-        db = SessionLocal()
-        try:
-            # Get job from database
-            job = db.query(models.ProcessingJob).filter(
-                models.ProcessingJob.id == job_id
-            ).first()
-            
-            if not job:
-                print(f"Job {job_id} not found")
-                return
-            
-            # List all audio files in GCS prefix
-            files = storage_manager.list_files(gcs_prefix)
-            audio_files = [f for f in files if f.lower().endswith(
-                ('.mp3', '.wav', '.m4a')
-            )]
-            
-            print(f"Found {len(audio_files)} audio files to process")
-            
-            for file_path in audio_files:
-                try:
-                    self.process_audio(db, job, file_path)
-                except Exception as e:
-                    print(f"Error processing {file_path}: {e}")
-                    traceback.print_exc()
-            
-            print(f"✅ Audio processing completed for job {job_id}")
-            
-            # Check if all files have been processed
-            self._check_job_completion(db, job)
-            
-        except Exception as e:
-            print(f"Error in audio processor: {e}")
-            traceback.print_exc()
-        finally:
-            db.close()
-    
     def _check_job_completion(self, db, job):
         """
         Check if all files in the job have been processed
@@ -160,7 +99,7 @@ class AudioProcessorService:
             models.Document.job_id == job.id
         ).count()
         
-        print(f"📊 Job {job.id}: {documents_processed}/{job.total_files} files processed")
+        print(f"Job {job.id}: {documents_processed}/{job.total_files} files processed")
         
         # Only mark as completed if all files are done
         if documents_processed >= job.total_files:
@@ -168,7 +107,7 @@ class AudioProcessorService:
                 job.status = models.JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
                 db.commit()
-                print(f"✅ Job {job.id} marked as COMPLETED")
+                print(f"Job {job.id} marked as COMPLETED")
         elif documents_processed > 0:
             # Some files processed, ensure status is PROCESSING
             if job.status == models.JobStatus.QUEUED:
@@ -188,7 +127,7 @@ class AudioProcessorService:
         5. Generate summary
         6. Create document record
         """
-        print(f"🔄 Processing audio: {gcs_path}")
+        print(f"Processing audio: {gcs_path}")
         
         filename = os.path.basename(gcs_path)
         is_hindi = 'hindi' in filename.lower()
@@ -220,7 +159,7 @@ class AudioProcessorService:
             final_text = transcription
             
             if is_hindi and transcription != "[ No transcription available ]":
-                print(f"🌐 Translating transcription from Hindi...")
+                print(f"Translating transcription from Hindi...")
                 try:
                     from document_processor import translate
                     
@@ -245,13 +184,13 @@ class AudioProcessorService:
                     os.unlink(temp_trans.name)
                     os.unlink(translated_path)
                     
-                    print(f"✅ Translation completed: {len(final_text)} characters")
+                    print(f"Translation completed: {len(final_text)} characters")
                 except Exception as e:
-                    print(f"⚠️ Translation failed: {e}")
+                    print(f"Translation failed: {e}")
                     # Continue without translation
             
             # Step 3: Summarization
-            print(f"📝 Generating summary...")
+            print(f"Generating summary...")
             summary = self.generate_summary(final_text)
             
             # Save summary to GCS with naming convention
@@ -279,7 +218,7 @@ class AudioProcessorService:
         db.refresh(document)
         
         # Step 5: Vectorize the text
-        print(f"🔢 Creating embeddings from transcription...")
+        print(f"Creating embeddings from transcription...")
         try:
             from vector_store import vectorise_and_store_alloydb
             # Delete existing chunks for this document
@@ -289,12 +228,12 @@ class AudioProcessorService:
             db.commit()
             # Vectorize the final text (translated if Hindi, original if English)
             vectorise_and_store_alloydb(db, document.id, final_text, summary)
-            print(f"✅ Embeddings created for audio transcription")
+            print(f"Embeddings created for audio transcription")
         except Exception as e:
-            print(f"⚠️ Vectorization failed: {e}")
+            print(f"Vectorization failed: {e}")
         
         # Step 6: Push to graph processor queue
-        print(f"📊 Queuing for graph processing...")
+        print(f"Queuing for graph processing...")
         username = job.user.username if job.user else "unknown"
         redis_pubsub.push_to_queue(settings.REDIS_QUEUE_GRAPH, {
             "job_id": job.id,
@@ -307,7 +246,7 @@ class AudioProcessorService:
         job.processed_files += 1
         db.commit()
         
-        print(f"✅ Completed processing: {filename}")
+        print(f"Completed processing: {filename}")
     
     def transcribe_audio(self, file_path: str, filename: str, is_hindi: bool = False) -> str:
         """
@@ -316,51 +255,47 @@ class AudioProcessorService:
         # ===== LOCAL DEV MODE: Use Gemini if configured =====
         try:
             if settings.USE_GEMINI_FOR_DEV and settings.GEMINI_API_KEY:
-                print(f"🔷 Using Gemini API for transcription (LOCAL DEV MODE)")
+                print(f"Using Gemini API for transcription (LOCAL DEV MODE)")
                 import google.generativeai as genai
-                
-                # Configure Gemini
                 genai.configure(api_key=settings.GEMINI_API_KEY)
-                
-                # Use Gemini 2.0 Flash which supports audio
                 model = genai.GenerativeModel('gemini-2.0-flash-exp')
                 
                 # Upload audio file
-                print(f"📤 Uploading audio file to Gemini...")
+                print(f"Uploading audio file to Gemini...")
                 audio_file = genai.upload_file(file_path)
-                print(f"✅ Audio file uploaded")
+                print(f"Audio file uploaded")
                 
                 # Create transcription prompt
                 lang_hint = "Hindi (Devanagari script)" if is_hindi else "English"
                 prompt = f"""Please transcribe this audio file accurately.
-The audio is in {lang_hint}.
-Provide the complete transcription with proper punctuation and formatting.
-Only output the transcription text, no additional commentary."""
+                The audio is in {lang_hint}.
+                Provide the complete transcription with proper punctuation and formatting.
+                Only output the transcription text, no additional commentary."""
                 
                 # Generate transcription
-                print(f"🎤 Transcribing audio...")
+                print(f"Transcribing audio...")
                 response = model.generate_content([prompt, audio_file])
                 transcription = response.text.strip()
                 
-                # Delete the uploaded file
                 audio_file.delete()
                 
-                print(f"✅ Gemini transcription completed: {len(transcription)} characters")
+                print(f"Gemini transcription completed: {len(transcription)} characters")
                 return transcription
                 
         except (ImportError, AttributeError) as e:
-            print(f"⚠️ Gemini not configured, falling back to placeholder: {e}")
+            print(f"Gemini not configured, falling back to placeholder: {e}")
         except Exception as e:
-            print(f"⚠️ Gemini transcription error: {e}")
+            print(f"Gemini transcription error: {e}")
             import traceback
             traceback.print_exc()
         
         # ===== PRODUCTION MODE: Use Gemma3:12b multimodal =====
-        print(f"🔧 Using Gemma3:12b multimodal for transcription (PRODUCTION MODE)")
-        print(f"⚠️ Multimodal LLM integration not yet implemented")
+        print(f"Using Gemma3:12b multimodal for transcription (PRODUCTION MODE)")
+        print(f"Multimodal LLM integration not yet implemented")
         
         # TODO: Implement Gemma3:12b multimodal transcription
-        # For now, return a placeholder
+        # For now, returning a placeholder
+        # Update with AI4Bharat Model
         return f"[ Audio transcription pending - Gemma3:12b multimodal integration required ]\nFile: {filename}"
     
     def generate_summary(self, text: str) -> str:
@@ -373,18 +308,18 @@ Only output the transcription text, no additional commentary."""
         # ===== LOCAL DEV MODE: Use Gemini if configured =====
         try:
             if settings.USE_GEMINI_FOR_DEV and settings.GEMINI_API_KEY:
-                print(f"🔷 Using Gemini API for summarization (LOCAL DEV MODE)")
+                print(f"Using Gemini API for summarization (LOCAL DEV MODE)")
                 from gemini_client import gemini_client
                 summary = gemini_client.generate_summary(text, max_words=200)
-                print(f"✅ Gemini summary generated")
+                print(f"Gemini summary generated")
                 return summary
         except (ImportError, AttributeError) as e:
-            print(f"⚠️ Gemini not configured for summary: {e}")
+            print(f"Gemini not configured for summary: {e}")
         except Exception as e:
-            print(f"⚠️ Gemini summary error: {e}")
+            print(f"Gemini summary error: {e}")
         
         # ===== PRODUCTION MODE: Use Ollama =====
-        print(f"🔧 Using Ollama for summarization (PRODUCTION MODE)")
+        print(f"Using Ollama for summarization (PRODUCTION MODE)")
         try:
             prompt = f"""Summarize the following transcribed audio in 200 words or less:
 
@@ -398,15 +333,15 @@ Summary:"""
             )
             return response['message']['content'].strip()
         except Exception as e:
-            print(f"⚠️ Ollama summary error: {e}")
+            print(f"Ollama summary error: {e}")
             return "Summary generation failed"
 
 
 def main():
     """Main entry point"""
-    print("🚀 Starting Audio Processor Service...")
-    print(f"📡 Using Redis Queue for parallel processing")
-    print(f"👂 Listening to queue: {settings.REDIS_QUEUE_AUDIO}")
+    print("Starting Audio Processor Service...")
+    print(f"Using Redis Queue for parallel processing")
+    print(f"Listening to queue: {settings.REDIS_QUEUE_AUDIO}")
     
     service = AudioProcessorService()
     

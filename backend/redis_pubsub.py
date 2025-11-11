@@ -91,7 +91,7 @@ class RedisPubSub:
         Listen to Redis queue (blocking pop) for work distribution
         Each message is consumed by only ONE worker (true parallelism)
         """
-        print(f"👂 Listening to queue: {queue_name}")
+        print(f"Listening to queue: {queue_name}")
         
         while True:
             try:
@@ -109,16 +109,16 @@ class RedisPubSub:
                         data = json.loads(message_data)
                         callback(data)
                     except json.JSONDecodeError as e:
-                        print(f"❌ Error decoding message: {e}")
+                        print(f"Error decoding message: {e}")
                     except Exception as e:
-                        print(f"❌ Error processing message: {e}")
+                        print(f"Error processing message: {e}")
                         import traceback
                         traceback.print_exc()
             except KeyboardInterrupt:
-                print("\n👋 Shutting down worker...")
+                print("\nShutting down worker...")
                 break
             except Exception as e:
-                print(f"❌ Error in queue listener: {e}")
+                print(f"Error in queue listener: {e}")
                 import time
                 time.sleep(1)  # Avoid tight loop on errors
     

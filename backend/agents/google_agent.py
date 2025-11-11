@@ -1,10 +1,3 @@
-"""
-Google AI SDK agent for document-aware chat.
-
-Uses google-generativeai (Gemini/Gemma) to answer questions based on
-document chunks retrieved from the vector store and optional static
-reference files (e.g. llms-full.txt).
-"""
 from __future__ import annotations
 
 import os
@@ -17,15 +10,13 @@ from config import settings
 
 
 class GoogleDocAgent:
-    """Wrapper around google-generativeai for document grounded chat."""
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY environment variable is required for GoogleDocAgent")
         self.api_key = api_key
-        # Use gemini-2.0-flash for better performance and cost efficiency
-        self.model_name = model or settings.GOOGLE_CHAT_MODEL or "gemini-2.0-flash-exp"
+        self.model_name = model or settings.GOOGLE_CHAT_MODEL or "gemini-2.5-flash"
         genai.configure(api_key=self.api_key)
         
         # Configure generation settings for better responses
@@ -40,32 +31,32 @@ class GoogleDocAgent:
             generation_config=generation_config
         )
 
-    def _load_reference_paths(self) -> List[str]:
-        """
-        Load reference files if specified in settings.
-        NOTE: Reference files should be small (<10KB). Large files will cause token limit issues!
-        """
-        base_paths = settings.google_agent_reference_paths
-        contents: List[str] = []
-        max_size = 10_000  # 10KB max per reference file
+    # def _load_reference_paths(self) -> List[str]:
+    #     """
+    #     Load reference files if specified in settings.
+    #     NOTE: Reference files should be small (<10KB). Large files will cause token limit issues!
+    #     """
+    #     base_paths = settings.google_agent_reference_paths
+    #     contents: List[str] = []
+    #     max_size = 10_000
         
-        for raw_path in base_paths:
-            try:
-                path = Path(raw_path).expanduser()
-                if not path.exists():
-                    continue
+    #     for raw_path in base_paths:
+    #         try:
+    #             path = Path(raw_path).expanduser()
+    #             if not path.exists():
+    #                 continue
                     
-                # Check file size before reading
-                file_size = path.stat().st_size
-                if file_size > max_size:
-                    print(f"⚠️  Skipping large reference file {raw_path} ({file_size} bytes > {max_size} bytes)")
-                    continue
+    #             # Check file size before reading
+    #             file_size = path.stat().st_size
+    #             if file_size > max_size:
+    #                 print(f"⚠️  Skipping large reference file {raw_path} ({file_size} bytes > {max_size} bytes)")
+    #                 continue
                 
-                text = path.read_text(encoding="utf-8")
-                contents.append(text)
-            except Exception as exc:  # pragma: no cover - filesystem optional
-                print(f"⚠️  Could not read reference file {raw_path}: {exc}")
-        return contents
+    #             text = path.read_text(encoding="utf-8")
+    #             contents.append(text)
+    #         except Exception as exc:  # pragma: no cover - filesystem optional
+    #             print(f"⚠️  Could not read reference file {raw_path}: {exc}")
+    #     return contents
 
     def build_prompt(
         self,
@@ -102,12 +93,12 @@ class GoogleDocAgent:
             )
 
         # Only add static references if explicitly requested AND if they're small
-        if include_static_refs:
-            static_refs = self._load_reference_paths()
-            for idx, ref_text in enumerate(static_refs, start=len(references) + 1):
-                if len(ref_text) > 1000:
-                    ref_text = ref_text[:1000] + "...[truncated]"
-                references.append(f"[Reference {idx}]\n{ref_text.strip()}")
+        # if include_static_refs:
+        #     static_refs = self._load_reference_paths()
+        #     for idx, ref_text in enumerate(static_refs, start=len(references) + 1):
+        #         if len(ref_text) > 1000:
+        #             ref_text = ref_text[:1000] + "...[truncated]"
+        #         references.append(f"[Reference {idx}]\n{ref_text.strip()}")
 
         prompt_parts = [
             "You are Sentinel AI's intelligent document analysis assistant.",
@@ -162,7 +153,7 @@ class GoogleDocAgent:
         prompt = self.build_prompt(question, chunks, metadata, include_static_refs)
         
         # Debug: show prompt length
-        print(f"📝 Prompt length: {len(prompt)} characters ({len(prompt.split())} words)")
+        print(f"Prompt length: {len(prompt)} characters ({len(prompt.split())} words)")
         
         try:
             response = self.model.generate_content(prompt)
@@ -170,5 +161,5 @@ class GoogleDocAgent:
                 return response.text.strip()
             return "I could not generate a response. The model may have filtered the content."
         except Exception as exc:
-            print(f"❌ Gemini generation error: {exc}")
+            print(f"Gemini generation error: {exc}")
             return f"Error generating response: {str(exc)}"

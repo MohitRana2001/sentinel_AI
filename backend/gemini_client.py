@@ -1,7 +1,3 @@
-"""
-Gemini API Client for Local Development
-USE ONLY FOR TESTING - Replace with Gemma/Ollama for production
-"""
 import os
 import google.generativeai as genai
 from typing import Optional
@@ -14,10 +10,10 @@ class GeminiClient:
         if self.api_key:
             genai.configure(api_key=self.api_key)
             self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
-            print("✅ Gemini API configured (LOCAL DEV MODE)")
+            print("Gemini API configured (LOCAL DEV MODE)")
         else:
             self.model = None
-            print("⚠️  No Gemini API key found. Set GEMINI_API_KEY environment variable.")
+            print("No Gemini API key found. Set GEMINI_API_KEY environment variable.")
     
     def generate_summary(self, text: str, max_words: int = 200) -> str:
         """Generate summary using Gemini"""
@@ -35,7 +31,7 @@ Summary:"""
             response = self.model.generate_content(prompt)
             return response.text.strip()
         except Exception as e:
-            print(f"❌ Gemini summary error: {e}")
+            print(f"Gemini summary error: {e}")
             return f"Error generating summary: {str(e)}"
     
     def translate_text(self, text: str, target_language: str = "English") -> str:
@@ -53,7 +49,7 @@ Translation:"""
             response = self.model.generate_content(prompt)
             return response.text.strip()
         except Exception as e:
-            print(f"❌ Gemini translation error: {e}")
+            print(f"Gemini translation error: {e}")
             return f"Error translating: {str(e)}"
     
     def transcribe_audio(self, text: str) -> str:
@@ -87,7 +83,7 @@ Answer:"""
             response = self.model.generate_content(prompt)
             return response.text.strip()
         except Exception as e:
-            print(f"❌ Gemini chat error: {e}")
+            print(f"Gemini chat error: {e}")
             return f"Error: {str(e)}"
 
 

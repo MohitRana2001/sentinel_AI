@@ -18,7 +18,7 @@ import sys
 import os
 import json
 import tempfile
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
 from indicnlp.tokenize import sentence_tokenize
 import langid
 from docling.backend.pypdfium2_backend import PyPdfiumDocumentBackend
@@ -28,6 +28,7 @@ from docling.document_converter import (
     PdfFormatOption,
     WordFormatOption,
 )
+from docling.chunking import HybridChunker
 from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
 from docling.datamodel.pipeline_options import (
     PdfPipelineOptions,
@@ -36,6 +37,9 @@ from docling.datamodel.pipeline_options import (
 from docling_core.types.doc.document import DoclingDocument
 from docling.pipeline.simple_pipeline import SimplePipeline
 from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
+from langchain_ollama import OllamaEmbeddings
+from langchain_postgres import PGVector
+from insert_pgvector import insert_pgvector
 
 try:
     from config import settings
@@ -87,7 +91,7 @@ def process_document_with_docling(input_path: str, lang: list = None) -> Tuple[s
             '/usr/share/tesseract-ocr/4.00/tessdata',
             '/usr/share/tesseract-ocr/5.00/tessdata',
             '/usr/share/tessdata',
-            '/opt/homebrew/share/tessdata',  # macOS Homebrew
+            '/opt/homebrew/share/tessdata',
         ]
         for path in possible_paths:
             if os.path.exists(path):
@@ -135,36 +139,21 @@ def process_document_with_docling(input_path: str, lang: list = None) -> Tuple[s
     
     # Convert document
     start_time = time.time()
-    print(f"🔄 Starting Docling conversion for file {input_path}")
-    print(f"   OCR enabled: {pipeline_options.do_ocr}")
-    print(f"   OCR languages: {tesseract_lang} (type: {type(tesseract_lang)})")
-    print(f"   TESSDATA_PREFIX: {os.environ.get('TESSDATA_PREFIX', 'NOT SET')}")
+    print(f"Starting Docling conversion for file {input_path}")
+    print(f"OCR enabled: {pipeline_options.do_ocr}")
+    print(f"OCR languages: {tesseract_lang} (type: {type(tesseract_lang)})")
+    print(f"TESSDATA_PREFIX: {os.environ.get('TESSDATA_PREFIX', 'NOT SET')}")
     
     conv_result = doc_converter.convert(input_path)
     end_time = time.time() - start_time
-    print(f"✅ Document converted in {end_time:.2f} seconds.")
-    
-    # Debug: Check conversion result
-    print(f"📊 Conversion result details:")
-    print(f"   - Document pages: {len(conv_result.document.pages) if hasattr(conv_result.document, 'pages') else 'N/A'}")
-    print(f"   - Document type: {type(conv_result.document)}")
+    print(f"Document converted in {end_time:.2f} seconds.")
     
     # Export to markdown and JSON
     markdown = conv_result.document.export_to_markdown()
     json_obj = conv_result.document.export_to_dict()
     
-    # Debug markdown output
-    print(f"📝 Markdown export:")
-    print(f"   - Length: {len(markdown)}")
-    print(f"   - First 300 chars: {markdown[:300] if markdown else 'EMPTY'}")
-    
-    # Debug JSON output
     if json_obj:
         text_items = json_obj.get("texts", [])
-        print(f"📋 JSON structure:")
-        print(f"   - Text items: {len(text_items)}")
-        if text_items:
-            print(f"   - First text item: {text_items[0] if len(text_items) > 0 else 'NONE'}")
     
     # Detect language
     if markdown and markdown.strip():
@@ -178,8 +167,9 @@ def process_document_with_docling(input_path: str, lang: list = None) -> Tuple[s
     return markdown, json_obj, detected_language
 
 
-def translate_json_object(doc_dict: Dict[str, Any], source_lang: str, target_lang: str = 'en') -> Tuple[str, str]:
-    print("🔧 Using local m2m100 model for JSON translation (PRODUCTION MODE)")
+def translate_json_object(doc_dict: Dict[str, Any], source_lang: str, target_lang: str = 'en', dir_path: str = None, file_name: str = None) -> Tuple[str, str, DoclingDocument]:
+    
+    print("Using local m2m100 model for JSON translation (PRODUCTION MODE)")
     mt = dlt.TranslationModel("./dlt/cached_model_m2m100", model_family="m2m100")
     
     text_items = doc_dict.get("texts", [])
@@ -200,68 +190,47 @@ def translate_json_object(doc_dict: Dict[str, Any], source_lang: str, target_lan
     translated_doc = DoclingDocument.model_validate(doc_dict)
     markdown_output = translated_doc.export_to_markdown()
     
-    # Write to temp file
-    temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.md')
-    temp_file.write(markdown_output)
-    temp_file.close()
+    if dir_path and file_name:
+        translated_path = f'{dir_path}/{file_name}-translated-en.md'
+        with open(translated_path, 'w', encoding='utf-8') as f:
+            f.write(markdown_output)
+    else:
+        temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.md', encoding='utf-8')
+        temp_file.write(markdown_output)
+        temp_file.close()
+        translated_path = temp_file.name
     
-    return markdown_output, temp_file.name
+    return markdown_output, translated_path, translated_doc
 
-def translate(dir_path, file_path, source_lang: str = 'hi'):
-    # Read the source text
-    with open(file_path) as f:
-        sents = f.read()
+def create_chunks(document: DoclingDocument, file_path: str) -> List[Dict[str, Any]]:
+
+    chunker = HybridChunker()
+    chunk_iter = chunker.chunk(dl_doc=document)
+    chunks = []
     
-    # Auto-detect language if not specified or detect from filename
-    if not source_lang or source_lang == 'auto':
-        # Try to detect from filename first
-        file_base = os.path.basename(file_path)
-        for lang_code in LANGUAGE_MAPPING.keys():
-            if lang_code in file_base.lower():
-                source_lang = lang_code
-                break
+    for i, chunk in enumerate(chunk_iter):
+        print(f"=== Chunk {i} ===")
+        print(f"chunk.text:\n{f'{chunk.text[:300]}…'!r}")
+    
+        enriched_text = chunker.contextualize(chunk=chunk)
+        print(f"chunker.contextualize(chunk):\n{f'{enriched_text[:300]}…'!r}")
         
-        # If still not detected, use langid
-        if not source_lang or source_lang == 'auto':
-            detected_lang, _ = langid.classify(sents)
-            source_lang = detected_lang
-            print(f"Auto-detected language: {source_lang}")
+        chunks.append({
+            'normal_chunk': chunk.text,
+            'enriched_chunk': enriched_text,
+            'file_path': file_path,
+            'chunk_index': i
+        })
+        print()
     
-    print(f"Translating from {source_lang} to English")
-    
-    print("Using local m2m100 model for translation (PRODUCTION MODE)")
-    mt = dlt.TranslationModel("./dlt/cached_model_m2m100", model_family="m2m100")
-    
-    # Split into sentences
-    try:
-        texts = sentence_tokenize.sentence_split(sents, lang=source_lang)
-        print(f"Split into {len(texts)} sentences")
-    except:
-        # Fallback to character-based splitting
-        max_chunk = 1000
-        texts = [sents[i:i+max_chunk] for i in range(0, len(sents), max_chunk)]
-        print(f"Split into {len(texts)} chunks (fallback)")
-    
-    # Translate
-    eng_translated_text = " ".join(mt.translate(texts, source=source_lang, target='en', verbose=True, batch_size=4))
-    
-    # Save translated text
-    file_name = file_path.split(".")[-2].split('/')[-1]
-    file_name += "-translated-eng"
-    translated_path = f'{dir_path}/{file_name}.{file_path.split(".")[-1]}'
-    print(f"💾 Saving to: {translated_path}")
-    with open(translated_path, 'w') as f:
-        f.write(eng_translated_text)
-    
-    print(f"✅ Translation completed")
-    return translated_path
+    return chunks
+
 
 def get_summary(file_path, ollama_client=None):
 
     with open(file_path, 'r') as file:
         document_content = file.read()
     
-    # ===== LOCAL DEV MODE: Use Gemini if configured =====
     try:
         from config import settings
         if settings.USE_GEMINI_FOR_DEV and settings.GEMINI_API_KEY:
@@ -278,9 +247,7 @@ def get_summary(file_path, ollama_client=None):
         ollama_client = Client(host=OLLAMA_HOST)
     
     prompt = f'''Please summarise the content between the tags <summarise></summarise>.
-    Please only summarize the content here and not anything else.  Start your response with an          overall understanding of the entire content. Then summarise any specific points that are         important.
-    Please note that, some content have been generated via OCR and machine translations. Try your best to understand and summarize them:
-    <summarise>{document_content}</summarise>"
+    Please only summarize the content here and not anything else. Start your response with an overall understanding of the entire content. Then summarise any specific points that are important. Please note that, some content have been generated via OCR and machine translations. Try your best to understand and summarize them: <summarise>{document_content}</summarise>"
     '''
     print(prompt)
     s = time.time()
@@ -336,10 +303,26 @@ if __name__ == "__main__":
     # Initialize Ollama client
     ollama_client = Client(host=OLLAMA_HOST)
     
-    # Track files for final processing
-    extracted_files = []  # All extracted files (markdown)
-    files_to_translate = []  # Non-English files needing translation
-    final_files = []  # Files ready for summarization (English only)
+    extracted_files = []
+    files_to_translate = []
+    final_files = []
+
+    try:
+        embed = OllamaEmbeddings(model="embeddinggemma:latest", base_url='http://10.0.2.222:11434')
+        db_user = 'postgres'
+        db_password = 'newpassword'
+        connection = f"postgresql+psycopg://{db_user}:{db_password}@10.0.2.35:5432/sentinel_db"
+        collection_name = "document_chunks_1"
+        vector_store = PGVector(
+            embeddings=embed,
+            collection_name=collection_name,
+            connection=connection,
+            use_jsonb=True,
+        )
+        print("Vector store initialized")
+    except Exception as e:
+        print(f"Vector store initialization failed: {e}")
+        vector_store = None
     
     # Process each document
     for i, doc_path in enumerate(all_docs, start=1):
@@ -350,31 +333,46 @@ if __name__ == "__main__":
         try:
             # Use Docling to process document
             doc_start = time.time()
-            extracted_text, extracted_json, detected_lang = process_document_with_docling(doc_path)
+            languages = ['eng', 'pan', 'ben', 'hin', 'kan', 'mal', 'mar', 'tam']
+            extracted_text, extracted_json, extract_language = process_document_with_docling(doc_path, lang=languages)
+
+            if not extracted_text:
+                print(f"File {doc_path} has an undetectable language. Moving on to next file")
+                continue
             
             # Save extracted text as markdown
-            base_name = os.path.splitext(os.path.basename(doc_path))[0]
-            extracted_file = f"{dir_path}/{base_name}-{detected_lang}-extracted.md"
-            
-            with open(extracted_file, 'w', encoding='utf-8') as f:
-                f.write(extracted_text)
-            
-            extracted_files.append(extracted_file)
-            print(f"Extracted: {extracted_file}")
-            print(f"Time: {(time.time() - doc_start):.2f}s")
-            
-            # Determine if translation is needed
-            if detected_lang != 'en':
-                files_to_translate.append({
-                    'file': extracted_file,
-                    'json': extracted_json,
-                    'lang': detected_lang,
-                    'base_name': base_name
-                })
-                print(f"Language: {detected_lang} - Will translate to English")
+            if extract_language == 'en':
+                file_path = f"{dir_path}/-{extract_language}-{i}.md"
+                final_files.append(file_path)
+                
+                # Create chunks for English documents
+                eng_doc = DoclingDocument.model_validate(extracted_json)
+                doc_chunks.append(create_chunks(eng_doc, file_path))
             else:
-                final_files.append(extracted_file)
-                print(f"Language: {detected_lang} - No translation needed")
+                file_path = f"{dir_path}/-{extract_language}-{i}.md"
+                file_path_json = f"{dir_path}/-{extract_language}-{i}.json"
+                
+                # Save JSON for non-English files
+                with open(file_path_json, 'w', encoding='utf-8') as json_file:
+                    json.dump(extracted_json, json_file)
+                
+                # Mark for translation
+                files_to_translate.append({
+                    'file': file_path,
+                    'json': extracted_json,
+                    'lang': extract_language,
+                    'base_name': f"-{extract_language}-{i}",
+                    'index': i
+                })
+            
+            # Save extracted markdown
+            print(f"Saving extracted file: {file_path}")
+            extracted_files.append(file_path)
+            with open(file_path, 'w', encoding='utf-8') as the_file:
+                the_file.write(extracted_text)
+            
+            print(f"Processed in {(time.time() - doc_start):.2f}s")
+            i += 1
             
         except Exception as e:
             print(f"ERROR processing {doc_path}: {e}")
@@ -393,18 +391,17 @@ if __name__ == "__main__":
                 print(f"Translating {file_info['base_name']} ({file_info['lang']} → en)...")
                 
                 # Use JSON-based translation for better accuracy
-                translated_md, temp_path = translate_json_object(
-                    file_info['json'],
+                translated_md, translated_path, translated_doc = translate_json_object(
+                    doc_dict=file_info['json'],
                     source_lang=file_info['lang'],
-                    target_lang='en'
+                    target_lang='en',
+                    dir_path=dir_path,
+                    file_name=file_info['base_name']
                 )
                 
                 # Save translated markdown
-                translated_file = f"{dir_path}/{file_info['base_name']}-translated-en.md"
-                with open(translated_file, 'w', encoding='utf-8') as f:
-                    f.write(translated_md)
-                
-                final_files.append(translated_file)
+                doc_chunks.append(create_chunks(translated_doc, translated_path))
+                final_files.append(translated_path)
                 
                 # Clean up temp file
                 if os.path.exists(temp_path):
@@ -417,12 +414,28 @@ if __name__ == "__main__":
                 print(f"ERROR translating {file_info['base_name']}: {e}")
                 traceback.print_exc()
                 continue
+
+    if len(doc_chunks) > 0:
+        print(f"\n{'='*60}")
+        print(f"Inserting chunks into vector store")
+        print(f"{'='*60}\n")
+        try:
+            print('Writing to Vector Store')
+            insert_pgvector(doc_chunks)
+            print(' --- Written to Vector Store')
+        except Exception as e:
+            print(f"ERROR inserting to vector store: {e}")
+            traceback.print_exc()
     
     # Generate summaries for all final files
     if final_files:
         print(f"\n{'='*60}")
         print(f"Generating summaries for {len(final_files)} documents")
         print(f"{'='*60}\n")
+
+        with open(f'{input_path}/final_file_paths.pkl', 'wb') as file:
+            pickle.dump(final_files, file)
+            print("Written the final file list object")
         
         for final_file in final_files:
             try:
@@ -444,12 +457,14 @@ if __name__ == "__main__":
                 print(f"ERROR summarizing {final_file}: {e}")
                 traceback.print_exc()
                 continue
+    else:
+        print("Could not process any file in the directory")
     
-    # Save file paths for reference
+    # Save all processed file paths for reference
     with open(f'{dir_path}/processed_files.pkl', 'wb') as f:
         pickle.dump({
             'extracted': extracted_files,
-            'translated': [f for info in files_to_translate for f in [f"{dir_path}/{info['base_name']}-translated-en.md"]],
+            'translated': [info['base_name'] + '-translated-en.md' for info in files_to_translate],
             'final': final_files
         }, f)
     

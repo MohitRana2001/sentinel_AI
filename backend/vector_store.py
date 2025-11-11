@@ -34,8 +34,10 @@ class VectorStore:
         metadata: Dict[str, Any] = None
     ) -> List[int]:
 
+        # if not document_id or document_id == 0:
+        # raise ValueError(f"Invalid document_id: {document_id}. Cannot create chunks for document_id=0")
+
         chunks = self.text_splitter.split_text(text)
-        
         print(f"Created {len(chunks)} chunks for document {document_id}")
         
         chunk_ids = []

@@ -80,12 +80,70 @@ export interface AnalysisResult {
   documents: DocumentResult[]
 }
 
-export interface Document {
+export type MediaType = 'document' | 'audio' | 'video' | 'cdr';
+
+export type ProcessingStatus = 'queued' | 'processing' | 'completed' | 'failed';
+
+// CDR (Call Data Record) specific types
+export interface CDRFile extends MediaItem {
+  mediaType: 'cdr'
+  recordCount?: number
+  dateRange?: {
+    from: string
+    to: string
+  }
+}
+
+// Suspect Management types
+export interface SuspectField {
+  id: string
+  key: string
+  value: string
+}
+
+export interface Suspect {
+  id: string
+  fields: SuspectField[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SuspectDatabase {
+  suspects: Suspect[]
+}
+
+export interface MediaItem {
   id: string
   fileName: string
+  mediaType: MediaType
   uploadedAt: string
   fileSize: number
-  status: "processing" | "completed" | "failed"
+  status: ProcessingStatus
+  jobId?: string
+  summary?: string
+  language?: string // Source language
+  translatedLanguage?: string // Target language (usually 'en')
+  progress?: number // 0-100
+  transcription?: string
+  duration?: number // For audio/video in seconds
+  thumbnailUrl?: string // For video
+}
+
+export interface Document extends MediaItem {
+  mediaType: 'document'
+}
+
+export interface AudioFile extends MediaItem {
+  mediaType: 'audio'
+  duration?: number
+  transcription?: string
+}
+
+export interface VideoFile extends MediaItem {
+  mediaType: 'video'
+  duration?: number
+  transcription?: string
+  thumbnailUrl?: string
 }
 
 export interface DocumentHistory {
@@ -107,5 +165,7 @@ export interface AuthContextType {
   }) => Promise<void>
   logout: () => Promise<void>
   documents: Document[]
+  mediaItems: MediaItem[]
   addDocument: (document: Document) => void
+  uploadMedia: (file: File, mediaType: MediaType, language?: string) => Promise<void>
 }

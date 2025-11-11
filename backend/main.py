@@ -24,6 +24,7 @@ except Exception:
     Neo4jGraph = None
 from agents.google_agent import GoogleDocAgent
 from routes.auth import router as auth_router
+from routes.media import router as media_router
 from security import get_current_user
 from rbac import (
     filter_documents_scope,
@@ -131,6 +132,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+app.include_router(media_router)
 
 if Neo4jGraph:
     try:
@@ -586,9 +588,18 @@ async def analyst_get_jobs(
 @app.post(f"{settings.API_PREFIX}/upload")
 async def upload_documents(
     files: List[UploadFile] = File(...),
+    media_type: Optional[str] = None,  # NEW: 'document', 'audio', 'video', 'cdr'
+    language: Optional[str] = None,     # NEW: For audio/video transcription
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    # Validation: Language required for audio/video
+    if media_type in ['audio', 'video'] and not language:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Language parameter is required for {media_type} files"
+        )
+    
     # Validation checks
     if len(files) > settings.MAX_UPLOAD_FILES:
         raise HTTPException(
@@ -660,6 +671,7 @@ async def upload_documents(
     
     filenames = []
     file_types = []
+    languages = []  # NEW: Store language for each file
     
     for file in files:
         try:
@@ -667,17 +679,28 @@ async def upload_documents(
             storage_manager.upload_file(file.file, gcs_path)
             filenames.append(file.filename)
             
-            ext = file.filename.split('.')[-1].lower()
-            if ext in ['pdf', 'docx', 'txt']:
-                file_types.append('document')
-            elif ext in ['mp3', 'wav', 'm4a']:
-                file_types.append('audio')
-            elif ext in ['mp4', 'avi', 'mov']:
-                file_types.append('video')
+            # Determine file type from media_type parameter or file extension
+            if media_type:
+                # Use explicit media_type if provided
+                current_file_type = media_type
             else:
-                file_types.append('document')
+                # Fall back to extension-based detection
+                ext = file.filename.split('.')[-1].lower()
+                if ext in ['pdf', 'docx', 'txt']:
+                    current_file_type = 'document'
+                elif ext in ['mp3', 'wav', 'm4a', 'ogg']:
+                    current_file_type = 'audio'
+                elif ext in ['mp4', 'avi', 'mov', 'mkv']:
+                    current_file_type = 'video'
+                elif ext in ['csv', 'xls', 'xlsx']:
+                    current_file_type = 'cdr'
+                else:
+                    current_file_type = 'document'
             
-            print(f"Uploaded: {file.filename} to {gcs_path}")
+            file_types.append(current_file_type)
+            languages.append(language)  # Store language (None for document/cdr)
+            
+            print(f"Uploaded: {file.filename} to {gcs_path} (type: {current_file_type}, lang: {language})")
         except Exception as e:
             print(f"Error uploading {file.filename}: {e}")
             raise HTTPException(
@@ -702,17 +725,23 @@ async def upload_documents(
     # Push per-file messages to Redis queues for true parallel processing
     # Each file gets its own message in a queue, distributed to available workers
     messages_queued = 0
-    for filename, file_type in zip(filenames, file_types):
+    for filename, file_type, lang in zip(filenames, file_types, languages):
         gcs_path = f"{gcs_prefix}{filename}"
         
+        # Prepare message with language metadata
+        message_metadata = {"language": lang} if lang else {}
+        
         if file_type == 'document':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_DOCUMENT)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_DOCUMENT, message_metadata)
             messages_queued += 1
         elif file_type == 'audio':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_AUDIO)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_AUDIO, message_metadata)
             messages_queued += 1
         elif file_type == 'video':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO, message_metadata)
+            messages_queued += 1
+        elif file_type == 'cdr':
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_CDR, message_metadata)
             messages_queued += 1
     
     print(f"Job {job_id} created and queued for processing ({messages_queued} messages in queue)")

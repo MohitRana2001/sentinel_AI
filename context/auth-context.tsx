@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 
-import type { User, AuthContextType, Document } from "@/types";
+import type { User, AuthContextType, Document, MediaItem, MediaType } from "@/types";
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -65,6 +65,7 @@ async function request<T>(
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
+  const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
   const [token, setToken] = useState<string | null>(null);
 
   const persistToken = useCallback((value: string | null) => {
@@ -168,6 +169,96 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setDocuments((prev) => [document, ...prev]);
   }, []);
 
+  // NEW: Upload media (document/audio/video)
+  const uploadMedia = useCallback(async (file: File, mediaType: MediaType, language?: string) => {
+    if (!token) {
+      throw new Error("Not authenticated");
+    }
+
+    const formData = new FormData();
+    formData.append('files', file);  // Changed from 'file' to 'files' (backend expects List[UploadFile])
+    formData.append('media_type', mediaType);
+    
+    // For audio/video, send the language code
+    if (language && (mediaType === 'audio' || mediaType === 'video')) {
+      formData.append('language', language);
+    }
+
+    const response = await fetch(`${API_BASE_URL}/upload`, {  // Changed from /media/upload to /upload
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        // Don't set Content-Type - let browser set it with boundary for multipart/form-data
+      },
+      body: formData
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
+      throw new Error(error.detail || 'Upload failed');
+    }
+
+    const { job_id, status } = await response.json();  // Backend returns job_id, not media_id
+
+    // Add to local state immediately
+    const newItem: MediaItem = {
+      id: job_id,  // Use job_id as the media item id
+      fileName: file.name,
+      mediaType,
+      uploadedAt: new Date().toISOString(),
+      fileSize: file.size / 1024 / 1024,
+      status: 'queued',
+      jobId: job_id,
+      language,
+      progress: 0
+    };
+
+    setMediaItems(prev => [newItem, ...prev]);
+
+    // Start polling for status
+    pollJobStatus(job_id, job_id);  // Use job_id for both
+  }, [token]);
+
+  // NEW: Poll job status every 2 seconds
+  const pollJobStatus = useCallback(async (jobId: string, mediaId: string) => {
+    if (!token) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/status`, {  // Use /jobs/{job_id}/status
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          }
+        });
+
+        if (!response.ok) {
+          clearInterval(interval);
+          return;
+        }
+
+        const { status, progress_percentage, error_message } = await response.json();
+
+        setMediaItems(prev => prev.map(item => 
+          item.id === mediaId 
+            ? { 
+                ...item, 
+                status: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : status === 'processing' ? 'processing' : 'queued',
+                progress: progress_percentage || 0,
+                // summary and transcription will come from results endpoint
+              }
+            : item
+        ));
+
+        if (status === 'completed' || status === 'failed') {
+          clearInterval(interval);
+        }
+      } catch (error) {
+        console.error('Error polling status:', error);
+        clearInterval(interval);
+      }
+    }, 2000);
+  }, [token]);
+
   const contextValue = useMemo<AuthContextType>(
     () => ({
       user,
@@ -176,9 +267,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signup,
       logout,
       documents,
+      mediaItems,
       addDocument,
+      uploadMedia,
     }),
-    [addDocument, documents, login, logout, signup, user]
+    [addDocument, documents, mediaItems, login, logout, signup, uploadMedia, user]
   );
 
   return (

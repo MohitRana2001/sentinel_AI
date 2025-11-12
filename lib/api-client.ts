@@ -98,11 +98,37 @@ class ApiClient {
     return {}
   }
 
-  async uploadDocuments(files: File[]): Promise<UploadResponse> {
+  async uploadDocuments(
+    files: File[], 
+    options?: {
+      mediaTypes?: string[]
+      languages?: string[]
+      suspects?: string
+      caseName?: string
+      parentJobId?: string
+    }
+  ): Promise<UploadResponse> {
     const formData = new FormData()
     files.forEach((file) => {
       formData.append("files", file)
     })
+    
+    // Add optional metadata
+    if (options?.mediaTypes) {
+      options.mediaTypes.forEach(type => formData.append("media_types", type))
+    }
+    if (options?.languages) {
+      options.languages.forEach(lang => formData.append("languages", lang))
+    }
+    if (options?.suspects) {
+      formData.append("suspects", options.suspects)
+    }
+    if (options?.caseName) {
+      formData.append("case_name", options.caseName)
+    }
+    if (options?.parentJobId) {
+      formData.append("parent_job_id", options.parentJobId)
+    }
 
     const response = await fetch(`${this.baseUrl}/upload`, {
       method: "POST",
@@ -113,6 +139,30 @@ class ApiClient {
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: "Upload failed" }))
       throw new Error(error.detail || "Upload failed")
+    }
+
+    return response.json()
+  }
+  
+  async getCases(): Promise<{ cases: string[] }> {
+    const response = await fetch(`${this.baseUrl}/cases`, {
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch cases")
+    }
+
+    return response.json()
+  }
+  
+  async getCaseJobs(caseName: string): Promise<any> {
+    const response = await fetch(`${this.baseUrl}/cases/${encodeURIComponent(caseName)}/jobs`, {
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch case jobs")
     }
 
     return response.json()

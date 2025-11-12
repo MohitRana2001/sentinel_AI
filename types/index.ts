@@ -38,6 +38,37 @@ export interface JobWithAnalyst {
   processed_files: number
   created_at: string
   progress_percentage: number
+  case_name?: string // NEW: Case name for grouping
+}
+
+// Job status response with per-artifact details
+export interface JobStatusResponse {
+  job_id: string
+  status: ProcessingStatus
+  case_name?: string
+  parent_job_id?: string
+  total_files: number
+  processed_files: number
+  progress_percentage: number
+  current_stage?: string
+  processing_stages?: Record<string, number>
+  artifacts: ArtifactStatus[] // NEW: Per-artifact status
+  started_at?: string
+  completed_at?: string
+  error_message?: string
+}
+
+// Per-artifact status tracking
+export interface ArtifactStatus {
+  id: number
+  filename: string
+  file_type: string
+  status: ProcessingStatus
+  current_stage?: string
+  processing_stages?: Record<string, number>
+  started_at?: string
+  completed_at?: string
+  error_message?: string
 }
 
 export interface ChartData {
@@ -128,7 +159,10 @@ export interface MediaItem {
   duration?: number // For audio/video in seconds
   thumbnailUrl?: string // For video
   currentStage?: string // Current processing stage
-  processingStages?: Record<string, number> // Stage timing data
+  processingStages?: Record<string, number> // Stage timing data (in seconds)
+  startedAt?: string // ISO timestamp
+  completedAt?: string // ISO timestamp
+  errorMessage?: string // Error message if failed
 }
 
 export interface Document extends MediaItem {
@@ -182,5 +216,5 @@ export interface AuthContextType {
   mediaItems: MediaItem[]
   addDocument: (document: Document) => void
   uploadMedia: (file: File, mediaType: MediaType, language?: string) => Promise<void>
-  uploadJob: (job: UploadJob) => Promise<void> // NEW: Unified upload
+  uploadJob: (job: UploadJob, caseName?: string, parentJobId?: string) => Promise<void> // UPDATED: Added caseName and parentJobId
 }

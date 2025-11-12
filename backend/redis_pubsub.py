@@ -3,6 +3,8 @@ import json
 from typing import Dict, Any, Callable, Optional
 from config import settings
 import threading
+from datetime import datetime
+from datetime import datetime
 
 
 class RedisPubSub:
@@ -57,6 +59,46 @@ class RedisPubSub:
             "metadata": message_metadata or {}
         }
         return self.push_to_queue(queue_name, message)
+    
+    def publish_artifact_status(self, job_id: str, filename: str, status: str, 
+                                 current_stage: Optional[str] = None,
+                                 processing_stages: Optional[Dict[str, float]] = None,
+                                 error_message: Optional[str] = None) -> int:
+        """
+        Publish per-artifact status update to a job-specific channel
+        This allows real-time UI updates for individual files
+        """
+        channel = f"job_status:{job_id}"
+        message = {
+            "type": "artifact_status",
+            "job_id": job_id,
+            "filename": filename,
+            "status": status,
+            "current_stage": current_stage,
+            "processing_stages": processing_stages or {},
+            "error_message": error_message,
+            "timestamp": datetime.now().isoformat()
+        }
+        return self.publish(channel, message)
+    
+    def publish_job_status(self, job_id: str, status: str, 
+                           current_stage: Optional[str] = None,
+                           processed_files: Optional[int] = None,
+                           total_files: Optional[int] = None) -> int:
+        """
+        Publish job-level status update
+        """
+        channel = f"job_status:{job_id}"
+        message = {
+            "type": "job_status",
+            "job_id": job_id,
+            "status": status,
+            "current_stage": current_stage,
+            "processed_files": processed_files,
+            "total_files": total_files,
+            "timestamp": datetime.now().isoformat()
+        }
+        return self.publish(channel, message)
     
     def subscribe(self, channel: str):
         self.pubsub.subscribe(channel)

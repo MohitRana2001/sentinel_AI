@@ -1,13 +1,15 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { Upload, FileText, Music, Video, Phone, X, Loader2, Plus } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Upload, FileText, Music, Video, Phone, X, Loader2, Plus, Folder } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { MediaType, FileWithMetadata, Suspect } from "@/types";
+import { apiClient } from "@/lib/api-client";
 
 // Languages from document_processor.py
 const SUPPORTED_LANGUAGES = [
@@ -32,14 +34,31 @@ const MEDIA_TYPE_CONFIG = {
 };
 
 interface UnifiedUploadProps {
-  onUpload: (files: FileWithMetadata[], suspects: Suspect[]) => Promise<void>;
+  onUpload: (files: FileWithMetadata[], suspects: Suspect[], caseName?: string, parentJobId?: string) => Promise<void>;
   suspects: Suspect[];
 }
 
 export function UnifiedUpload({ onUpload, suspects }: UnifiedUploadProps) {
   const [files, setFiles] = useState<FileWithMetadata[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [caseName, setCaseName] = useState<string>("");
+  const [existingCases, setExistingCases] = useState<string[]>([]);
+  const [selectedCase, setSelectedCase] = useState<string>("");
+  const [isNewCase, setIsNewCase] = useState(true);
   const { toast } = useToast();
+  
+  // Load existing cases on mount
+  useEffect(() => {
+    async function loadCases() {
+      try {
+        const response = await apiClient.getCases();
+        setExistingCases(response.cases);
+      } catch (error) {
+        console.error("Failed to load cases:", error);
+      }
+    }
+    loadCases();
+  }, []);
 
   const addFile = (mediaType: MediaType) => {
     const input = document.createElement('input');
@@ -97,11 +116,14 @@ export function UnifiedUpload({ onUpload, suspects }: UnifiedUploadProps) {
 
     setIsUploading(true);
     try {
-      await onUpload(files, suspects);
+      const finalCaseName = isNewCase ? caseName : selectedCase;
+      await onUpload(files, suspects, finalCaseName || undefined);
       setFiles([]);
+      setCaseName("");
+      setSelectedCase("");
       toast({
         title: "Upload successful",
-        description: `${files.length} file(s) uploaded and queued for processing`,
+        description: `${files.length} file(s) uploaded${finalCaseName ? ` to case "${finalCaseName}"` : ''} and queued for processing`,
       });
     } catch (error) {
       toast({
@@ -128,6 +150,79 @@ export function UnifiedUpload({ onUpload, suspects }: UnifiedUploadProps) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Case Name Section */}
+        <div className="space-y-3 p-4 border rounded-lg bg-slate-50">
+          <div className="flex items-center gap-2 mb-2">
+            <Folder className="h-4 w-4 text-slate-600" />
+            <Label className="font-medium">Case Management (Optional)</Label>
+          </div>
+          
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant={isNewCase ? "default" : "outline"}
+              size="sm"
+              onClick={() => setIsNewCase(true)}
+              disabled={isUploading}
+            >
+              New Case
+            </Button>
+            <Button
+              type="button"
+              variant={!isNewCase ? "default" : "outline"}
+              size="sm"
+              onClick={() => setIsNewCase(false)}
+              disabled={isUploading || existingCases.length === 0}
+            >
+              Existing Case
+            </Button>
+          </div>
+          
+          {isNewCase ? (
+            <div className="space-y-2">
+              <Label htmlFor="case-name" className="text-sm text-slate-600">
+                Case Name
+              </Label>
+              <Input
+                id="case-name"
+                placeholder="e.g., Operation Phoenix, Case 2024-001"
+                value={caseName}
+                onChange={(e) => setCaseName(e.target.value)}
+                disabled={isUploading}
+                className="bg-white"
+              />
+              <p className="text-xs text-muted-foreground">
+                Group related documents together. You can add more documents to this case later.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <Label htmlFor="existing-case" className="text-sm text-slate-600">
+                Select Case
+              </Label>
+              <Select
+                value={selectedCase}
+                onValueChange={setSelectedCase}
+                disabled={isUploading}
+              >
+                <SelectTrigger className="bg-white">
+                  <SelectValue placeholder="Choose an existing case" />
+                </SelectTrigger>
+                <SelectContent>
+                  {existingCases.map((caseItem) => (
+                    <SelectItem key={caseItem} value={caseItem}>
+                      {caseItem}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Add more documents to an existing case to enhance summaries and graphs.
+              </p>
+            </div>
+          )}
+        </div>
+        
         {/* Add File Buttons */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
           <Button

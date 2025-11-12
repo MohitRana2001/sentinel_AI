@@ -42,8 +42,8 @@ export function AnalystDashboard() {
     }
   };
 
-  const handleUpload = async (files: FileWithMetadata[], jobSuspects: Suspect[]) => {
-    await uploadJob({ files, suspects: jobSuspects });
+  const handleUpload = async (files: FileWithMetadata[], jobSuspects: Suspect[], caseName?: string, parentJobId?: string) => {
+    await uploadJob({ files, suspects: jobSuspects }, caseName, parentJobId);
   };
 
   const handleViewResults = (jobId: string) => {

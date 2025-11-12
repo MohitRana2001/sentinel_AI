@@ -57,6 +57,8 @@ class DocumentProcessorService:
         print(f"GCS Path: {gcs_path}")
         
         db = SessionLocal()
+        artifact_start_time = datetime.now(timezone.utc)
+        
         try:
             # Get job from database
             job = db.query(models.ProcessingJob).filter(
@@ -83,7 +85,35 @@ class DocumentProcessorService:
                 print(f"File {filename} already processed by another worker, skipping")
                 return
             
-            self.process_document(db, job, gcs_path)
+            # Create or update document record with PROCESSING status
+            if not existing_doc:
+                existing_doc = models.Document(
+                    job_id=job.id,
+                    original_filename=filename,
+                    file_type=self._infer_file_type(filename),
+                    gcs_path=gcs_path,
+                    status=models.JobStatus.PROCESSING,
+                    started_at=artifact_start_time,
+                    processing_stages={}
+                )
+                db.add(existing_doc)
+            else:
+                existing_doc.status = models.JobStatus.PROCESSING
+                existing_doc.started_at = artifact_start_time
+                existing_doc.processing_stages = {}
+            
+            db.commit()
+            
+            # Publish artifact status: PROCESSING
+            redis_pubsub.publish_artifact_status(
+                job_id=job_id,
+                filename=filename,
+                status="processing",
+                current_stage="starting"
+            )
+            
+            # Process the document and track timing
+            self.process_document(db, job, gcs_path, existing_doc, artifact_start_time)
             
             self._check_job_completion(db, job)
             
@@ -92,8 +122,43 @@ class DocumentProcessorService:
         except Exception as e:
             print(f"Error processing file {filename}: {e}")
             traceback.print_exc()
+            
+            # Update document status to FAILED
+            try:
+                doc = db.query(models.Document).filter(
+                    models.Document.job_id == job_id,
+                    models.Document.original_filename == filename
+                ).first()
+                
+                if doc:
+                    doc.status = models.JobStatus.FAILED
+                    doc.error_message = str(e)
+                    doc.completed_at = datetime.now(timezone.utc)
+                    db.commit()
+                    
+                    # Publish artifact status: FAILED
+                    redis_pubsub.publish_artifact_status(
+                        job_id=job_id,
+                        filename=filename,
+                        status="failed",
+                        error_message=str(e)
+                    )
+            except Exception as update_error:
+                print(f"Failed to update document status: {update_error}")
         finally:
             db.close()
+    
+    def _infer_file_type(self, filename: str) -> models.FileType:
+        """Infer file type from filename extension"""
+        ext = filename.split('.')[-1].lower() if '.' in filename else ''
+        if ext in ['pdf', 'docx', 'txt', 'doc']:
+            return models.FileType.DOCUMENT
+        elif ext in ['mp3', 'wav', 'm4a', 'ogg']:
+            return models.FileType.AUDIO
+        elif ext in ['mp4', 'avi', 'mov', 'mkv']:
+            return models.FileType.VIDEO
+        else:
+            return models.FileType.DOCUMENT  # Default
     
     def _check_job_completion(self, db, job):
         # Count documents created for this job
@@ -115,14 +180,32 @@ class DocumentProcessorService:
                 job.started_at = job.started_at or datetime.now(timezone.utc)
                 db.commit()
     
-    def process_document(self, db, job, gcs_path: str):
+    def process_document(self, db, job, gcs_path: str, doc_record=None, artifact_start_time=None):
         print(f"\n🔄 Processing document: {gcs_path}")
+        
+        if artifact_start_time is None:
+            artifact_start_time = datetime.now(timezone.utc)
+        
+        stage_times = {}  # Track timing for each processing stage
         
         suffix = os.path.splitext(gcs_path)[1]
         temp_file = storage_manager.download_to_temp(gcs_path, suffix=suffix)
         
         try:
             filename = os.path.basename(gcs_path)
+            
+            # Update stage: extraction
+            if doc_record:
+                doc_record.current_stage = "extraction"
+                db.commit()
+                redis_pubsub.publish_artifact_status(
+                    job_id=job.id,
+                    filename=filename,
+                    status="processing",
+                    current_stage="extraction"
+                )
+            
+            extraction_start = datetime.now(timezone.utc)
             
             use_docling = suffix.lower() in ['.pdf', '.docx']
             supported_langs = ['eng', 'hin', 'ben', 'pan', 'guj', 'kan', 'mal', 'mar', 'tam', 'tel', 'chi_sim']            
@@ -168,6 +251,10 @@ class DocumentProcessorService:
                     traceback.print_exc()
                     use_docling = False
             
+            # Record extraction time
+            extraction_end = datetime.now(timezone.utc)
+            stage_times['extraction'] = (extraction_end - extraction_start).total_seconds()
+            
             needs_translation = detected_language and detected_language != 'en'
             translated_text_path = None
             final_text = extracted_text
@@ -177,6 +264,21 @@ class DocumentProcessorService:
             
             # Step 2: Translation (if needed)
             if needs_translation:
+                translation_start = datetime.now(timezone.utc)
+                
+                # Update stage: translation
+                if doc_record:
+                    doc_record.current_stage = "translation"
+                    doc_record.processing_stages = stage_times
+                    db.commit()
+                    redis_pubsub.publish_artifact_status(
+                        job_id=job.id,
+                        filename=filename,
+                        status="processing",
+                        current_stage="translation",
+                        processing_stages=stage_times
+                    )
+                
                 print(f"Translating from {detected_language} to English...")
                 
                 if use_docling and extracted_json:
@@ -209,6 +311,10 @@ class DocumentProcessorService:
                         final_text = extracted_text
                         translated_doc = None
                         print(f"Using original extracted text")
+                
+                # Record translation time
+                translation_end = datetime.now(timezone.utc)
+                stage_times['translation'] = (translation_end - translation_start).total_seconds()
             
             # Validate we have extracted text
             if not extracted_text or not extracted_text.strip():
@@ -224,6 +330,21 @@ class DocumentProcessorService:
             print(f"Saved extracted text to: {extracted_text_path}")
             
             # Step 4: Generate summary
+            summarization_start = datetime.now(timezone.utc)
+            
+            # Update stage: summarization
+            if doc_record:
+                doc_record.current_stage = "summarization"
+                doc_record.processing_stages = stage_times
+                db.commit()
+                redis_pubsub.publish_artifact_status(
+                    job_id=job.id,
+                    filename=filename,
+                    status="processing",
+                    current_stage="summarization",
+                    processing_stages=stage_times
+                )
+            
             print(f"Generating summary...")
             
             if not final_text or not final_text.strip():
@@ -246,6 +367,10 @@ class DocumentProcessorService:
                 summary = f"Summary generation failed: {str(e)}"
             finally:
                 os.unlink(temp_final.name)
+            
+            # Record summarization time
+            summarization_end = datetime.now(timezone.utc)
+            stage_times['summarization'] = (summarization_end - summarization_start).total_seconds()
             
             summary_path = gcs_path.replace(suffix, f'{dash_prefix}summary.txt')
             storage_manager.upload_text(summary, summary_path)
@@ -297,6 +422,21 @@ class DocumentProcessorService:
             print(f"Document record saved with ID: {document.id}")
 
             # Step 6: Create embeddings with chunking
+            embedding_start = datetime.now(timezone.utc)
+            
+            # Update stage: embeddings
+            if doc_record:
+                doc_record.current_stage = "embeddings"
+                doc_record.processing_stages = stage_times
+                db.commit()
+                redis_pubsub.publish_artifact_status(
+                    job_id=job.id,
+                    filename=filename,
+                    status="processing",
+                    current_stage="embeddings",
+                    processing_stages=stage_times
+                )
+            
             print(f"Creating embeddings...")
             print(f"DEBUG: About to vectorize document ID: {document.id}")  # ADD THIS
             print(f"DEBUG: Document object: {document}")
@@ -338,6 +478,29 @@ class DocumentProcessorService:
             models.DocumentChunk.document_id == document.id
             ).count()
             print(f"VERIFICATION: Document {document.id} now has {chunk_count} chunks")
+            
+            # Record embedding time
+            embedding_end = datetime.now(timezone.utc)
+            stage_times['embeddings'] = (embedding_end - embedding_start).total_seconds()
+            
+            # Update document with final status and timing
+            if doc_record:
+                doc_record.status = models.JobStatus.COMPLETED
+                doc_record.completed_at = datetime.now(timezone.utc)
+                doc_record.processing_stages = stage_times
+                doc_record.current_stage = "completed"
+                db.commit()
+                
+                # Publish final artifact status: COMPLETED
+                redis_pubsub.publish_artifact_status(
+                    job_id=job.id,
+                    filename=filename,
+                    status="completed",
+                    processing_stages=stage_times
+                )
+            
+            print(f"✅ Document processing completed for {filename}")
+            print(f"   Timing breakdown: {stage_times}")
             
             # Step 7: Queue for graph processing
             print(f"Queuing for graph processing...")

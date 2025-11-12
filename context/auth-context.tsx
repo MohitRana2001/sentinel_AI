@@ -219,12 +219,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     pollJobStatus(job_id, job_id);  // Use job_id for both
   }, [token]);
 
-  // NEW: Poll job status every 2 seconds
+  // NEW: Poll job status every 2 seconds with per-artifact tracking
   const pollJobStatus = useCallback(async (jobId: string, mediaId: string) => {
     if (!token) return;
 
     const interval = setInterval(async () => {
-      try {
+      try{
         const response = await fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/status`, {  // Use /jobs/{job_id}/status
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -241,21 +241,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           progress_percentage, 
           error_message, 
           current_stage, 
-          processing_stages 
+          processing_stages,
+          artifacts  // NEW: Per-artifact status array
         } = await response.json();
 
-        setMediaItems(prev => prev.map(item => 
-          item.id === mediaId 
-            ? { 
-                ...item, 
-                status: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : status === 'processing' ? 'processing' : 'queued',
-                progress: progress_percentage || 0,
-                currentStage: current_stage,
-                processingStages: processing_stages || {},
-                // summary and transcription will come from results endpoint
-              }
-            : item
-        ));
+        // Update media items with per-artifact status
+        if (artifacts && artifacts.length > 0) {
+          setMediaItems(prev => prev.map(item => {
+            // Find the matching artifact for this media item
+            const artifact = artifacts.find((a: any) => 
+              item.fileName === a.filename || item.id.endsWith(a.filename)
+            );
+            
+            if (artifact && item.jobId === jobId) {
+              return {
+                ...item,
+                status: artifact.status === 'completed' ? 'completed' : 
+                        artifact.status === 'failed' ? 'failed' : 
+                        artifact.status === 'processing' ? 'processing' : 'queued',
+                progress: artifact.status === 'completed' ? 100 : 
+                          artifact.status === 'processing' ? 50 : 
+                          artifact.status === 'failed' ? 0 : 0,
+                currentStage: artifact.current_stage,
+                processingStages: artifact.processing_stages || {},
+                startedAt: artifact.started_at,
+                completedAt: artifact.completed_at,
+                errorMessage: artifact.error_message
+              };
+            }
+            return item;
+          }));
+        } else {
+          // Fallback to job-level status if no artifacts
+          setMediaItems(prev => prev.map(item => 
+            item.jobId === jobId 
+              ? { 
+                  ...item, 
+                  status: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : status === 'processing' ? 'processing' : 'queued',
+                  progress: progress_percentage || 0,
+                  currentStage: current_stage,
+                  processingStages: processing_stages || {},
+                }
+              : item
+          ));
+        }
 
         if (status === 'completed' || status === 'failed') {
           clearInterval(interval);
@@ -268,7 +297,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [token]);
 
   // NEW: Unified upload for multiple media types + suspects in one job
-  const uploadJob = useCallback(async (job: { files: any[]; suspects: any[] }) => {
+  const uploadJob = useCallback(async (job: { files: any[]; suspects: any[] }, caseName?: string, parentJobId?: string) => {
     if (!token) {
       throw new Error("Not authenticated");
     }
@@ -289,6 +318,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Add suspects data as JSON
     if (job.suspects.length > 0) {
       formData.append('suspects', JSON.stringify(job.suspects));
+    }
+    
+    // Add case name if provided
+    if (caseName) {
+      formData.append('case_name', caseName);
+    }
+    
+    // Add parent job ID if provided
+    if (parentJobId) {
+      formData.append('parent_job_id', parentJobId);
     }
 
     const response = await fetch(`${API_BASE_URL}/upload`, {
@@ -324,7 +363,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Start polling for status
     pollJobStatus(job_id, job_id);
-  }, [token]);
+  }, [token, pollJobStatus]);
 
   const contextValue = useMemo<AuthContextType>(
     () => ({

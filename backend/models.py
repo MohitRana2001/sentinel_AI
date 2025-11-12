@@ -65,6 +65,10 @@ class ProcessingJob(Base):
     
     status = Column(SQLEnum(JobStatus), default=JobStatus.QUEUED, nullable=False)
     
+    # Case Management - allows grouping and extending cases
+    case_name = Column(String, index=True, nullable=True)  # Case identifier to group related uploads
+    parent_job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=True)  # Reference to parent job if extending case
+    
     gcs_prefix = Column(String, nullable=False)
     
     original_filenames = Column(JSON)
@@ -85,6 +89,9 @@ class ProcessingJob(Base):
     
     user = relationship("User", back_populates="jobs", foreign_keys=[user_id])
     documents = relationship("Document", back_populates="job")
+    
+    # Self-referential for case extensions
+    child_jobs = relationship("ProcessingJob", backref="parent_job", remote_side=[id], foreign_keys=[parent_job_id])
     
     def parse_job_id(self):
         """Parse job_id to extract manager_username, analyst_username, and job_uuid"""
@@ -119,6 +126,15 @@ class Document(Base):
     
     # Summary text (cached for quick access)
     summary_text = Column(Text)
+    
+    # Per-artifact status and timing tracking
+    status = Column(SQLEnum(JobStatus), default=JobStatus.QUEUED, nullable=False)
+    processing_stages = Column(JSON, default=dict)  # {"extraction": 5.2, "summarization": 3.1, ...}
+    current_stage = Column(String)  # Current processing stage for this artifact
+    error_message = Column(Text)  # Error message specific to this artifact
+    
+    started_at = Column(DateTime)  # When processing started for this artifact
+    completed_at = Column(DateTime)  # When processing completed for this artifact
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)

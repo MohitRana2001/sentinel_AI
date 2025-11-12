@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
@@ -660,9 +660,23 @@ async def create_person_of_interest(
 @app.post(f"{settings.API_PREFIX}/upload")
 async def upload_documents(
     files: List[UploadFile] = File(...),
+    media_types: List[str] = Form(default=[]),
+    languages: List[str] = Form(default=[]),
+    suspects: str = Form(default="[]"),
+    case_name: str = Form(default=None),  # NEW: Case name for grouping jobs
+    parent_job_id: str = Form(default=None),  # NEW: Parent job ID for extending cases
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    # Parse suspects from JSON string
+    try:
+        suspects_data = json.loads(suspects) if suspects else []
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid suspects JSON format"
+        )
+    
     # Validation checks
     if len(files) > settings.MAX_UPLOAD_FILES:
         raise HTTPException(
@@ -734,24 +748,40 @@ async def upload_documents(
     
     filenames = []
     file_types = []
+    file_languages = []
     
-    for file in files:
+    # Use provided media_types if available, otherwise infer from extension
+    for idx, file in enumerate(files):
         try:
             gcs_path = f"{gcs_prefix}{file.filename}"
             storage_manager.upload_file(file.file, gcs_path)
             filenames.append(file.filename)
             
-            ext = file.filename.split('.')[-1].lower()
-            if ext in ['pdf', 'docx', 'txt']:
-                file_types.append('document')
-            elif ext in ['mp3', 'wav', 'm4a']:
-                file_types.append('audio')
-            elif ext in ['mp4', 'avi', 'mov']:
-                file_types.append('video')
+            # Determine file type from media_types if provided, otherwise from extension
+            if idx < len(media_types) and media_types[idx]:
+                file_type = media_types[idx]
             else:
-                file_types.append('document')
+                ext = file.filename.split('.')[-1].lower()
+                if ext in ['pdf', 'docx', 'txt']:
+                    file_type = 'document'
+                elif ext in ['mp3', 'wav', 'm4a']:
+                    file_type = 'audio'
+                elif ext in ['mp4', 'avi', 'mov']:
+                    file_type = 'video'
+                elif ext in ['csv', 'xlsx']:
+                    file_type = 'cdr'
+                else:
+                    file_type = 'document'
             
-            print(f"Uploaded: {file.filename} to {gcs_path}")
+            file_types.append(file_type)
+            
+            # Get language if provided
+            if idx < len(languages) and languages[idx]:
+                file_languages.append(languages[idx])
+            else:
+                file_languages.append(None)
+            
+            print(f"Uploaded: {file.filename} to {gcs_path} (type: {file_type})")
         except Exception as e:
             print(f"Error uploading {file.filename}: {e}")
             raise HTTPException(
@@ -766,7 +796,9 @@ async def upload_documents(
         original_filenames=filenames,
         file_types=file_types,
         total_files=len(files),
-        status=models.JobStatus.QUEUED
+        status=models.JobStatus.QUEUED,
+        case_name=case_name,  # NEW: Store case name
+        parent_job_id=parent_job_id  # NEW: Link to parent job if extending case
     )
     
     db.add(job)
@@ -786,9 +818,8 @@ async def upload_documents(
         db.commit()
         print(f"Saved {len(suspects_data)} suspects for job {job_id}")
     
-    # Process CDR files synchronously (no queue needed)
     cdr_files_processed = 0
-    for filename, file_type in zip(filenames, job_file_types):
+    for idx, (filename, file_type) in enumerate(zip(filenames, file_types)):
         if file_type == 'cdr':
             try:
                 gcs_path = f"{gcs_prefix}{filename}"
@@ -822,17 +853,22 @@ async def upload_documents(
     # Push per-file messages to Redis queues for true parallel processing
     # Each file gets its own message in a queue, distributed to available workers
     messages_queued = 0
-    for filename, file_type in zip(filenames, file_types):
+    for idx, (filename, file_type) in enumerate(zip(filenames, file_types)):
         gcs_path = f"{gcs_prefix}{filename}"
         
+        # Prepare metadata with language if available
+        metadata = {}
+        if idx < len(file_languages) and file_languages[idx]:
+            metadata['language'] = file_languages[idx]
+        
         if file_type == 'document':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_DOCUMENT)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_DOCUMENT, metadata)
             messages_queued += 1
         elif file_type == 'audio':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_AUDIO)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_AUDIO, metadata)
             messages_queued += 1
         elif file_type == 'video':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO, message_metadata)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO, metadata)
             messages_queued += 1
         # CDR files are processed synchronously above, no queue needed
     
@@ -847,13 +883,66 @@ async def upload_documents(
         "message": f"Successfully uploaded {len(files)} files and {len(suspects_data)} suspects. Processing started."
     }
 
+@app.get(f"{settings.API_PREFIX}/cases")
+async def get_cases(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Get all unique case names for the current user (or their analysts if manager)
+    """
+    query = db.query(models.ProcessingJob.case_name).filter(
+        models.ProcessingJob.case_name.isnot(None)
+    ).distinct()
+    
+    query = filter_jobs_scope(query, current_user)
+    
+    cases = [row[0] for row in query.all()]
+    
+    return {
+        "cases": cases
+    }
+
+
+@app.get(f"{settings.API_PREFIX}/cases/{{case_name}}/jobs")
+async def get_case_jobs(
+    case_name: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Get all jobs for a specific case
+    """
+    query = db.query(models.ProcessingJob).filter(
+        models.ProcessingJob.case_name == case_name
+    ).order_by(models.ProcessingJob.created_at.desc())
+    
+    query = filter_jobs_scope(query, current_user)
+    jobs = query.all()
+    
+    return {
+        "case_name": case_name,
+        "jobs": [
+            {
+                "job_id": job.id,
+                "status": job.status.value,
+                "total_files": job.total_files,
+                "processed_files": job.processed_files,
+                "parent_job_id": job.parent_job_id,
+                "created_at": job.created_at.isoformat(),
+                "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+            }
+            for job in jobs
+        ]
+    }
+
+
 @app.get(f"{settings.API_PREFIX}/jobs/{{job_id:path}}/status")
 async def get_job_status(
     job_id: str,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # (Your original code...)
     job = db.query(models.ProcessingJob).filter(
         models.ProcessingJob.id == job_id
     ).first()
@@ -871,14 +960,36 @@ async def get_job_status(
     if job.total_files > 0:
         progress_percentage = (job.processed_files / job.total_files) * 100
     
+    # Get per-artifact status
+    documents = db.query(models.Document).filter(
+        models.Document.job_id == job_id
+    ).all()
+    
+    artifacts = []
+    for doc in documents:
+        artifacts.append({
+            "id": doc.id,
+            "filename": doc.original_filename,
+            "file_type": doc.file_type.value,
+            "status": doc.status.value if doc.status else "queued",
+            "current_stage": doc.current_stage,
+            "processing_stages": doc.processing_stages or {},
+            "started_at": doc.started_at.isoformat() if doc.started_at else None,
+            "completed_at": doc.completed_at.isoformat() if doc.completed_at else None,
+            "error_message": doc.error_message
+        })
+    
     return {
         "job_id": job.id,
         "status": job.status.value,
+        "case_name": job.case_name,
+        "parent_job_id": job.parent_job_id,
         "total_files": job.total_files,
         "processed_files": job.processed_files,
         "progress_percentage": round(progress_percentage, 2),
         "current_stage": job.current_stage,
         "processing_stages": job.processing_stages or {},
+        "artifacts": artifacts,  # NEW: Per-artifact status
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
         "error_message": job.error_message

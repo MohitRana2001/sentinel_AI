@@ -343,7 +343,8 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             job_id=job.id,
             filename=filename,
             status="processing",
-            current_stage="starting"
+            current_stage="starting",
+            file_type="video"
         )
         
         # Download video file to temp
@@ -362,7 +363,8 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                 job_id=job.id,
                 filename=filename,
                 status="processing",
-                current_stage="frame_extraction"
+                current_stage="frame_extraction",
+                file_type="video"
             )
             
             frame_paths = self.extract_frames(temp_video_file, temp_frames_dir)
@@ -380,7 +382,8 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                 filename=filename,
                 status="processing",
                 current_stage="video_analysis",
-                processing_stages=stage_times
+                processing_stages=stage_times,
+                file_type="video"
             )
             
             analysis = self.analyze_video_frames(temp_frames_dir)
@@ -416,7 +419,8 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                     filename=filename,
                     status="processing",
                     current_stage="translation",
-                    processing_stages=stage_times
+                    processing_stages=stage_times,
+                    file_type="video"
                 )
                 
                 print(f"🌐 Translating analysis from Hindi...")
@@ -462,7 +466,8 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                 filename=filename,
                 status="processing",
                 current_stage="summarization",
-                processing_stages=stage_times
+                processing_stages=stage_times,
+                file_type="video"
             )
             
             print(f"📝 Generating summary...")
@@ -500,7 +505,8 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             filename=filename,
             status="processing",
             current_stage="vectorization",
-            processing_stages=stage_times
+            processing_stages=stage_times,
+            file_type="video"
         )
         
         print(f"🔢 Creating embeddings from video analysis...")
@@ -531,7 +537,8 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             filename=filename,
             status="processing",
             current_stage="awaiting_graph",
-            processing_stages=stage_times
+            processing_stages=stage_times,
+            file_type="video"
         )
         
         # Step 7: Push to graph processor queue

@@ -80,12 +80,22 @@ class GraphProcessorService:
             if document:
                 document.current_stage = "graph_building"
                 db.commit()
+                
+                # Determine file type for progress calculation
+                file_type = "document"
+                if document.file_type == models.FileType.AUDIO:
+                    file_type = "audio"
+                elif document.file_type == models.FileType.VIDEO:
+                    file_type = "video"
+                
                 if filename:
                     redis_pubsub.publish_artifact_status(
                         job_id=job_id,
                         filename=filename,
                         status="processing",
-                        current_stage="graph_building"
+                        current_stage="graph_building",
+                        processing_stages=document.processing_stages or {},
+                        file_type=file_type
                     )
         except Exception as e:
             print(f"Error getting document info: {e}")
@@ -244,6 +254,13 @@ class GraphProcessorService:
                 
                 db.commit()
                 
+                # Determine file type for progress calculation
+                file_type = "document"
+                if document.file_type == models.FileType.AUDIO:
+                    file_type = "audio"
+                elif document.file_type == models.FileType.VIDEO:
+                    file_type = "video"
+                
                 # Publish artifact completion status
                 if filename:
                     redis_pubsub.publish_artifact_status(
@@ -251,7 +268,8 @@ class GraphProcessorService:
                         filename=filename,
                         status="completed",
                         current_stage="completed",
-                        processing_stages=processing_stages
+                        processing_stages=processing_stages,
+                        file_type=file_type
                     )
                     print(f"✅ Artifact {filename} marked as COMPLETED")
             

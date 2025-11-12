@@ -161,7 +161,8 @@ class AudioProcessorService:
             job_id=job.id,
             filename=filename,
             status="processing",
-            current_stage="starting"
+            current_stage="starting",
+            file_type="audio"
         )
         
         # Download audio file to temp
@@ -177,7 +178,8 @@ class AudioProcessorService:
                 job_id=job.id,
                 filename=filename,
                 status="processing",
-                current_stage="transcription"
+                current_stage="transcription",
+                file_type="audio"
             )
             
             transcription = self.transcribe_audio(temp_file_path, filename, is_hindi)
@@ -213,7 +215,8 @@ class AudioProcessorService:
                     filename=filename,
                     status="processing",
                     current_stage="translation",
-                    processing_stages=stage_times
+                    processing_stages=stage_times,
+                    file_type="audio"
                 )
                 
                 print(f"Translating transcription from Hindi...")
@@ -259,7 +262,8 @@ class AudioProcessorService:
                 filename=filename,
                 status="processing",
                 current_stage="summarization",
-                processing_stages=stage_times
+                processing_stages=stage_times,
+                file_type="audio"
             )
             
             print(f"Generating summary...")
@@ -295,7 +299,8 @@ class AudioProcessorService:
             filename=filename,
             status="processing",
             current_stage="vectorization",
-            processing_stages=stage_times
+            processing_stages=stage_times,
+            file_type="audio"
         )
         
         print(f"Creating embeddings from transcription...")
@@ -326,7 +331,8 @@ class AudioProcessorService:
             filename=filename,
             status="processing",
             current_stage="awaiting_graph",
-            processing_stages=stage_times
+            processing_stages=stage_times,
+            file_type="audio"
         )
         
         # Step 6: Push to graph processor queue

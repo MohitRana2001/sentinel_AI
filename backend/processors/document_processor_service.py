@@ -109,7 +109,8 @@ class DocumentProcessorService:
                 job_id=job_id,
                 filename=filename,
                 status="processing",
-                current_stage="starting"
+                current_stage="starting",
+                file_type="document"
             )
             
             # Process the document and track timing
@@ -197,13 +198,14 @@ class DocumentProcessorService:
             # Update stage: extraction
             if doc_record:
                 doc_record.current_stage = "extraction"
-                db.commit()
+                db.commit()                    
                 redis_pubsub.publish_artifact_status(
-                    job_id=job.id,
-                    filename=filename,
-                    status="processing",
-                    current_stage="extraction"
-                )
+                        job_id=job.id,
+                        filename=filename,
+                        status="processing",
+                        current_stage="extraction",
+                        file_type="document"
+                    )
             
             extraction_start = datetime.now(timezone.utc)
             
@@ -276,7 +278,8 @@ class DocumentProcessorService:
                         filename=filename,
                         status="processing",
                         current_stage="translation",
-                        processing_stages=stage_times
+                        processing_stages=stage_times,
+                        file_type="document"
                     )
                 
                 print(f"Translating from {detected_language} to English...")
@@ -342,7 +345,8 @@ class DocumentProcessorService:
                     filename=filename,
                     status="processing",
                     current_stage="summarization",
-                    processing_stages=stage_times
+                    processing_stages=stage_times,
+                    file_type="document"
                 )
             
             print(f"Generating summary...")
@@ -434,7 +438,8 @@ class DocumentProcessorService:
                     filename=filename,
                     status="processing",
                     current_stage="embeddings",
-                    processing_stages=stage_times
+                    processing_stages=stage_times,
+                    file_type="document"
                 )
             
             print(f"Creating embeddings...")
@@ -496,7 +501,8 @@ class DocumentProcessorService:
                     filename=filename,
                     status="processing",
                     current_stage="awaiting_graph",
-                    processing_stages=stage_times
+                    processing_stages=stage_times,
+                    file_type="document"
                 )
             
             print(f"✅ Document processing completed for {filename} (awaiting graph)")

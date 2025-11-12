@@ -1,7 +1,6 @@
 from sqlalchemy import Column, String, Integer, DateTime, Text, JSON, ForeignKey, Enum as SQLEnum, Float, Index, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from datetime import datetime
 import enum
 from database import Base
@@ -200,56 +199,41 @@ class ActivityLog(Base):
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
 
-class Suspect(Base):
-    """Suspects linked to processing jobs"""
-    __tablename__ = "suspects"
+# --- PERSON OF INTEREST MODELS ---
+
+EMBEDDING_GEMMA_DIM = 768 
+PHOTO_VECTOR_DIM = 1024 
+
+class PersonOfInterest(Base):
+    __tablename__ = "person_of_interest"
+
+    id = Column(Integer, primary_key=True, index=True)
     
-    id = Column(String, primary_key=True, index=True)  # UUID from frontend
-    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=False)
+    name = Column(String, index=True, nullable=False)
     
-    # Suspect data stored as JSON (flexible key-value fields)
-    fields = Column(JSON, nullable=False)  # Array of {id, key, value}
+    # Stores arbitrary key-value pairs (e.g., "Names": [...], "Status": "Gangster")
+    details = Column(JSONB, nullable=False)
+    
+    photograph_base64 = Column(Text, nullable=True)
+    
+    # Vectors
+    details_embedding = Column(Vector(EMBEDDING_GEMMA_DIM))
+    photograph_embedding = Column(Vector(PHOTO_VECTOR_DIM))
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    # Relationship
-    job = relationship("ProcessingJob", backref="suspects")
 
-
-EMBEDDING_GEMMA_DIM = 768 
-
-PHOTO_VECTOR_DIM = 1024 
-
-# class PersonOfInterest(Base):
-#     __tablename__ = "person_of_interest"
-
-#     id = Column(Integer, primary_key=True, index=True)
-    
-#     name = Column(String, index=True, nullable=False)
-    
-#     details = Column(JSONB, nullable=False)
-    
-#     photograph_base64 = Column(Text, nullable=True)
-    
-#     details_embedding = Column(Vector(EMBEDDING_GEMMA_DIM))
-    
-#     photograph_embedding = Column(Vector(PHOTO_VECTOR_DIM))
-    
-#     created_at = Column(DateTime, default=datetime.utcnow)
-#     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-#     __table_args__ = (
-#         Index(
-#             "ix_poi_details_embedding",
-#             "details_embedding",
-#             postgresql_using="ivfflat",
-#             postgresql_with={"lists": 100}
-#         ),
-#         Index(
-#             "ix_poi_photo_embedding",
-#             "photograph_embedding",
-#             postgresql_using="ivfflat",
-#             postgresql_with={"lists": 100}
-#         ),
-#     )
+    __table_args__ = (
+        Index(
+            "ix_poi_details_embedding",
+            "details_embedding",
+            postgresql_using="ivfflat",
+            postgresql_with={"lists": 100}
+        ),
+        Index(
+            "ix_poi_photo_embedding",
+            "photograph_embedding",
+            postgresql_using="ivfflat",
+            postgresql_with={"lists": 100}
+        ),
+    )

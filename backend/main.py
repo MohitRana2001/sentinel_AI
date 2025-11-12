@@ -1,8 +1,9 @@
-from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Form
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 import uuid
+from langchain_ollama import OllamaEmbeddings
 import json
 
 import enum
@@ -25,7 +26,6 @@ except Exception:
     Neo4jGraph = None
 from agents.google_agent import GoogleDocAgent
 from routes.auth import router as auth_router
-from routes.media import router as media_router
 from security import get_current_user
 from rbac import (
     filter_documents_scope,
@@ -111,6 +111,11 @@ class JobWithAnalyst(BaseModel):
     processed_files: int
     created_at: datetime
     progress_percentage: float
+
+class PersonOfInterestCreate(BaseModel):
+    name: str
+    details: Dict[str, Any]
+    photograph_base64: Optional[str] = None
 # --- END: PYDANTIC MODELS ---
 
 
@@ -133,7 +138,6 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
-app.include_router(media_router)
 
 if Neo4jGraph:
     try:
@@ -182,6 +186,9 @@ async def startup_event():
     print("Database initialized")
     print(f"API running at {settings.API_HOST}:{settings.API_PORT}")
     print(f"Docs available at {settings.API_PREFIX}/docs")
+    print("Registered Routes")
+    for route in app.routes:
+        print(route.path)
 
 
 @app.get("/")
@@ -214,6 +221,25 @@ async def get_config():
         "rbac_levels": settings.RBAC_LEVELS
     }
 
+def get_poi_embedding_model():
+    """
+    Returns the Ollama embedding model for vectorizing PoI details.
+    Using the same model as document processor.
+    """
+    return OllamaEmbeddings(
+        model="embeddinggemma:latest",
+        # Assuming Ollama runs on port 11434 on the configured host
+        # base_url=f"http://{settings.CHAT_LLM_HOST}:11434"
+        base_url="http://127.0.0.1:11434"  
+    )
+
+def get_photo_embedding(base64_str: str) -> List[float]:
+    """
+    Placeholder for generating vision embeddings from a base64 image.
+    TODO: Shounak to provide the vision model logic here.
+    """
+    # Returning a zero-vector of dimension 1024 as a placeholder
+    return [0.0] * 1024
 
 # --- START: USER MANAGEMENT ENDPOINTS ---
 
@@ -584,40 +610,58 @@ async def analyst_get_jobs(
 
 # --- END: USER MANAGEMENT ENDPOINTS ---
 
+@app.post(f"{settings.API_PREFIX}/person-of-interest")
+async def create_person_of_interest(
+    poi_in: PersonOfInterestCreate,
+    db: Session = Depends(get_db),
+    #current_user: models.User = Depends(get_current_user)
+):
+    """Creates a new Person of Interest with embeddings."""
+    
+    print(f"Creating PoI: {poi_in.name}")
+    
+    # 1. Generate Text Embedding for the JSON details
+    details_str = json.dumps(poi_in.details)
+    
+    try:
+        embed_model = get_poi_embedding_model()
+        details_embedding = embed_model.embed_query(details_str)
+        print(f"Generated text embedding of length: {len(details_embedding)}")
+    except Exception as e:
+        print(f"Error generating text embedding: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate text embedding: {str(e)}")
 
+    # 2. Generate Photo Embedding
+    photo_embedding = None
+    if poi_in.photograph_base64:
+        try:
+            photo_embedding = get_photo_embedding(poi_in.photograph_base64)
+            print(f"Generated photo embedding of length: {len(photo_embedding)}")
+        except Exception as e:
+            print(f"Error generating photo embedding: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to generate photo embedding: {str(e)}")
+
+    # 3. Save to Database
+    new_poi = models.PersonOfInterest(
+        name=poi_in.name,
+        details=poi_in.details,
+        photograph_base64=poi_in.photograph_base64,
+        details_embedding=details_embedding,
+        photograph_embedding=photo_embedding
+    )
+    
+    db.add(new_poi)
+    db.commit()
+    db.refresh(new_poi)
+    
+    return {"id": new_poi.id, "name": new_poi.name, "message": "Person of Interest created successfully"}
 
 @app.post(f"{settings.API_PREFIX}/upload")
 async def upload_documents(
     files: List[UploadFile] = File(...),
-    media_types: List[str] = Form([]),      # NEW: List of media types (one per file)
-    languages: List[str] = Form([]),         # NEW: List of languages (one per file, empty string if N/A)
-    suspects: Optional[str] = Form(None),    # NEW: JSON string of suspects data
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """
-    Unified upload endpoint - supports multiple media types in one job + suspects
-    """
-    
-    # Parse suspects if provided
-    suspects_data = []
-    if suspects:
-        try:
-            suspects_data = json.loads(suspects)
-        except Exception as e:
-            print(f"Warning: Failed to parse suspects data: {e}")
-    
-    # Parse media_types and languages arrays
-    file_media_types = media_types if media_types else []
-    file_languages = languages if languages else []
-    
-    # Ensure we have media_types and languages for each file
-    # If not provided, we'll infer from file extension
-    while len(file_media_types) < len(files):
-        file_media_types.append("")
-    while len(file_languages) < len(files):
-        file_languages.append("")
-    
     # Validation checks
     if len(files) > settings.MAX_UPLOAD_FILES:
         raise HTTPException(
@@ -688,41 +732,25 @@ async def upload_documents(
     print(f"Starting upload for job {job_id}: {len(files)} files")
     
     filenames = []
-    job_file_types = []
-    job_languages = []  # Store language for each file
+    file_types = []
     
-    # Process each file with its metadata
-    for idx, file in enumerate(files):
-        media_type = file_media_types[idx] if idx < len(file_media_types) else ""
-        language = file_languages[idx] if idx < len(file_languages) else ""
-        
+    for file in files:
         try:
             gcs_path = f"{gcs_prefix}{file.filename}"
             storage_manager.upload_file(file.file, gcs_path)
             filenames.append(file.filename)
             
-            # Determine file type from media_type parameter or file extension
-            if media_type:
-                # Use explicit media_type if provided
-                current_file_type = media_type
+            ext = file.filename.split('.')[-1].lower()
+            if ext in ['pdf', 'docx', 'txt']:
+                file_types.append('document')
+            elif ext in ['mp3', 'wav', 'm4a']:
+                file_types.append('audio')
+            elif ext in ['mp4', 'avi', 'mov']:
+                file_types.append('video')
             else:
-                # Fall back to extension-based detection
-                ext = file.filename.split('.')[-1].lower()
-                if ext in ['pdf', 'docx', 'txt']:
-                    current_file_type = 'document'
-                elif ext in ['mp3', 'wav', 'm4a', 'ogg']:
-                    current_file_type = 'audio'
-                elif ext in ['mp4', 'avi', 'mov', 'mkv']:
-                    current_file_type = 'video'
-                elif ext in ['csv', 'xls', 'xlsx']:
-                    current_file_type = 'cdr'
-                else:
-                    current_file_type = 'document'
+                file_types.append('document')
             
-            job_file_types.append(current_file_type)
-            job_languages.append(language)  # Store language (empty string for document/cdr)
-            
-            print(f"Uploaded: {file.filename} to {gcs_path} (type: {current_file_type}, lang: {language})")
+            print(f"Uploaded: {file.filename} to {gcs_path}")
         except Exception as e:
             print(f"Error uploading {file.filename}: {e}")
             raise HTTPException(
@@ -735,7 +763,7 @@ async def upload_documents(
         user_id=current_user.id,
         gcs_prefix=gcs_prefix,
         original_filenames=filenames,
-        file_types=job_file_types,
+        file_types=file_types,
         total_files=len(files),
         status=models.JobStatus.QUEUED
     )
@@ -744,39 +772,20 @@ async def upload_documents(
     db.commit()
     db.refresh(job)
     
-    # Save suspects to database
-    for suspect_data in suspects_data:
-        suspect = models.Suspect(
-            id=suspect_data.get('id', str(uuid.uuid4())),
-            job_id=job_id,
-            fields=suspect_data.get('fields', [])
-        )
-        db.add(suspect)
-    
-    if suspects_data:
-        db.commit()
-        print(f"Saved {len(suspects_data)} suspects for job {job_id}")
-    
     # Push per-file messages to Redis queues for true parallel processing
     # Each file gets its own message in a queue, distributed to available workers
     messages_queued = 0
-    for filename, file_type, lang in zip(filenames, job_file_types, job_languages):
+    for filename, file_type in zip(filenames, file_types):
         gcs_path = f"{gcs_prefix}{filename}"
         
-        # Prepare message with language metadata
-        message_metadata = {"language": lang} if lang else {}
-        
         if file_type == 'document':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_DOCUMENT, message_metadata)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_DOCUMENT)
             messages_queued += 1
         elif file_type == 'audio':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_AUDIO, message_metadata)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_AUDIO)
             messages_queued += 1
         elif file_type == 'video':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO, message_metadata)
-            messages_queued += 1
-        elif file_type == 'cdr':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_CDR, message_metadata)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO)
             messages_queued += 1
     
     print(f"Job {job_id} created and queued for processing ({messages_queued} messages in queue)")
@@ -785,8 +794,7 @@ async def upload_documents(
         "job_id": job_id,
         "status": "queued",
         "total_files": len(files),
-        "suspects_count": len(suspects_data),
-        "message": f"Successfully uploaded {len(files)} files and {len(suspects_data)} suspects. Processing started."
+        "message": f"Successfully uploaded {len(files)} files. Processing started."
     }
 
 @app.get(f"{settings.API_PREFIX}/jobs/{{job_id:path}}/status")
@@ -850,12 +858,6 @@ async def get_job_results(
     )
     documents = filter_documents_scope(documents_query, current_user).all()
     
-    # Get suspects for this job
-    suspects_query = db.query(models.Suspect).filter(
-        models.Suspect.job_id == job_id
-    )
-    suspects = suspects_query.all()
-    
     return {
         "job_id": job.id,
         "status": job.status.value,
@@ -869,15 +871,6 @@ async def get_job_results(
                 "created_at": doc.created_at.isoformat()
             }
             for doc in documents
-        ],
-        "suspects": [
-            {
-                "id": suspect.id,
-                "fields": suspect.fields,
-                "created_at": suspect.created_at.isoformat(),
-                "updated_at": suspect.updated_at.isoformat()
-            }
-            for suspect in suspects
         ]
     }
 
@@ -896,24 +889,17 @@ async def get_user_jobs(
     query = filter_jobs_scope(query, current_user)
     jobs = query.limit(limit).offset(offset).all()
     
-    result = []
-    for job in jobs:
-        # Get suspects count for this job
-        suspects_count = db.query(models.Suspect).filter(
-            models.Suspect.job_id == job.id
-        ).count()
-        
-        result.append({
+    return [
+        {
             "job_id": job.id,
             "status": job.status.value,
             "total_files": job.total_files,
             "processed_files": job.processed_files,
-            "suspects_count": suspects_count,
             "created_at": job.created_at.isoformat(),
             "progress_percentage": (job.processed_files / job.total_files * 100) if job.total_files > 0 else 0
-        })
-    
-    return result
+        }
+        for job in jobs
+    ]
 
 
 
@@ -1221,20 +1207,6 @@ async def chat_with_documents(
             user=current_user
         )
 
-        # print(f"SIMILARITY SEARCH RESULTS: {len(results)} chunks found")
-        # if results:
-        #     print(f"First result: {results[0]}")
-        # else:
-        #     print(f"NO RESULTS - Checking database...")
-        #     from sqlalchemy import func
-        #     chunk_count = db.query(func.count(models.DocumentChunk.id)).scalar()
-        # print(f"Total chunks in database: {chunk_count}")
-        # if doc_id_list:
-        #     doc_chunk_count = db.query(func.count(models.DocumentChunk.id)).filter(
-        #         models.DocumentChunk.document_id.in_(doc_id_list)
-        #     ).scalar()
-        # print(f"Chunks for selected docs {doc_id_list}: {doc_chunk_count}")
-
         context = "\n\n".join([r["chunk_text"][:800] for r in results[:5]])
         
         # ===== LOCAL DEV MODE: Use Gemini if configured =====
@@ -1297,7 +1269,7 @@ async def chat_with_documents(
             full_context = "\n\n".join(context_with_sources)
             
             # Create RAG prompt
-            prompt = f"""You are a helpful assistant analyzing documents. Based on the following document excerpts, answer the     user's question accurately and concisely.
+            prompt = f"""You are a helpful assistant analyzing documents. Based on the following document excerpts, answer the      user's question accurately and concisely.
 
 Document Excerpts:
 {full_context}

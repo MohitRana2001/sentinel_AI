@@ -287,37 +287,4 @@ class CDRRecord(Base):
 
 EMBEDDING_GEMMA_DIM = 768 
 
-PHOTO_VECTOR_DIM = 1024 
-
-# class PersonOfInterest(Base):
-#     __tablename__ = "person_of_interest"
-
-#     id = Column(Integer, primary_key=True, index=True)
-    
-#     name = Column(String, index=True, nullable=False)
-    
-#     details = Column(JSONB, nullable=False)
-    
-#     photograph_base64 = Column(Text, nullable=True)
-    
-#     details_embedding = Column(Vector(EMBEDDING_GEMMA_DIM))
-    
-#     photograph_embedding = Column(Vector(PHOTO_VECTOR_DIM))
-    
-#     created_at = Column(DateTime, default=datetime.utcnow)
-#     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-#     __table_args__ = (
-#         Index(
-#             "ix_poi_details_embedding",
-#             "details_embedding",
-#             postgresql_using="ivfflat",
-#             postgresql_with={"lists": 100}
-#         ),
-#         Index(
-#             "ix_poi_photo_embedding",
-#             "photograph_embedding",
-#             postgresql_using="ivfflat",
-#             postgresql_with={"lists": 100}
-#         ),
-#     )
+PHOTO_VECTOR_DIM = 1024

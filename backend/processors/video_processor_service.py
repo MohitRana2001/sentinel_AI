@@ -307,12 +307,44 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         4. Detect language and translate if Hindi
         5. Save analysis and translation to GCS
         6. Generate summary
-        7. Create document record
+        7. Create document record with PROCESSING status
+        8. Queue for graph processing (status will be updated by graph processor)
         """
         print(f"🔄 Processing video: {gcs_path}")
         
         filename = os.path.basename(gcs_path)
         is_hindi = 'hindi' in filename.lower()
+        artifact_start_time = datetime.now(timezone.utc)
+        stage_times = {}
+        
+        # Check if document record already exists
+        doc_record = db.query(models.Document).filter(
+            models.Document.job_id == job.id,
+            models.Document.original_filename == filename
+        ).first()
+        
+        if not doc_record:
+            doc_record = models.Document(
+                job_id=job.id,
+                original_filename=filename,
+                file_type=models.FileType.VIDEO,
+                gcs_path=gcs_path,
+                status=models.JobStatus.PROCESSING,
+                started_at=artifact_start_time,
+                current_stage="starting",
+                processing_stages={}
+            )
+            db.add(doc_record)
+            db.commit()
+            db.refresh(doc_record)
+        
+        # Publish artifact status: PROCESSING
+        redis_pubsub.publish_artifact_status(
+            job_id=job.id,
+            filename=filename,
+            status="processing",
+            current_stage="starting"
+        )
         
         # Download video file to temp
         suffix = os.path.splitext(gcs_path)[1]
@@ -323,14 +355,42 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         
         try:
             # Step 1: Extract frames from video
+            frame_extraction_start = datetime.now(timezone.utc)
+            doc_record.current_stage = "frame_extraction"
+            db.commit()
+            redis_pubsub.publish_artifact_status(
+                job_id=job.id,
+                filename=filename,
+                status="processing",
+                current_stage="frame_extraction"
+            )
+            
             frame_paths = self.extract_frames(temp_video_file, temp_frames_dir)
             
+            frame_extraction_end = datetime.now(timezone.utc)
+            stage_times['frame_extraction'] = (frame_extraction_end - frame_extraction_start).total_seconds()
+            
             # Step 2: Analyze frames using vision LLM
+            analysis_start = datetime.now(timezone.utc)
+            doc_record.current_stage = "video_analysis"
+            doc_record.processing_stages = stage_times
+            db.commit()
+            redis_pubsub.publish_artifact_status(
+                job_id=job.id,
+                filename=filename,
+                status="processing",
+                current_stage="video_analysis",
+                processing_stages=stage_times
+            )
+            
             analysis = self.analyze_video_frames(temp_frames_dir)
             
             if not analysis or not analysis.strip():
                 analysis = "[ No analysis available ]"
                 print(f"⚠️ Empty analysis for {filename}")
+            
+            analysis_end = datetime.now(timezone.utc)
+            stage_times['video_analysis'] = (analysis_end - analysis_start).total_seconds()
             
             # Determine naming convention based on translation
             # == (two equal signs) for analysis + summary
@@ -347,6 +407,18 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             final_text = analysis
             
             if is_hindi and analysis != "[ No analysis available ]":
+                translation_start = datetime.now(timezone.utc)
+                doc_record.current_stage = "translation"
+                doc_record.processing_stages = stage_times
+                db.commit()
+                redis_pubsub.publish_artifact_status(
+                    job_id=job.id,
+                    filename=filename,
+                    status="processing",
+                    current_stage="translation",
+                    processing_stages=stage_times
+                )
+                
                 print(f"🌐 Translating analysis from Hindi...")
                 try:
                     from document_processor import translate
@@ -376,14 +448,32 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                 except Exception as e:
                     print(f"⚠️ Translation failed: {e}")
                     # Continue without translation
+                
+                translation_end = datetime.now(timezone.utc)
+                stage_times['translation'] = (translation_end - translation_start).total_seconds()
             
             # Step 4: Summarization
+            summarization_start = datetime.now(timezone.utc)
+            doc_record.current_stage = "summarization"
+            doc_record.processing_stages = stage_times
+            db.commit()
+            redis_pubsub.publish_artifact_status(
+                job_id=job.id,
+                filename=filename,
+                status="processing",
+                current_stage="summarization",
+                processing_stages=stage_times
+            )
+            
             print(f"📝 Generating summary...")
             summary = self.generate_summary(final_text)
             
             # Save summary to GCS with naming convention
             summary_path = gcs_path + f'{equal_prefix}summary.txt'
             storage_manager.upload_text(summary, summary_path)
+            
+            summarization_end = datetime.now(timezone.utc)
+            stage_times['summarization'] = (summarization_end - summarization_start).total_seconds()
             
         finally:
             # Cleanup temp files
@@ -392,51 +482,74 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             if os.path.exists(temp_frames_dir):
                 shutil.rmtree(temp_frames_dir)
         
-        # Step 5: Create document record
-        document = models.Document(
-            job_id=job.id,
-            original_filename=filename,
-            file_type=models.FileType.VIDEO,
-            gcs_path=gcs_path,
-            transcription_path=analysis_path,  # Store analysis in transcription_path
-            translated_text_path=translated_text_path,
-            summary_path=summary_path,
-            summary_text=summary[:1000] if summary else ""
-        )
-        db.add(document)
+        # Step 5: Update document record with paths
+        doc_record.transcription_path = analysis_path  # Store analysis in transcription_path
+        doc_record.translated_text_path = translated_text_path
+        doc_record.summary_path = summary_path
+        doc_record.summary_text = summary[:1000] if summary else ""
         db.commit()
-        db.refresh(document)
+        db.refresh(doc_record)
         
         # Step 6: Vectorize the text
+        vectorization_start = datetime.now(timezone.utc)
+        doc_record.current_stage = "vectorization"
+        doc_record.processing_stages = stage_times
+        db.commit()
+        redis_pubsub.publish_artifact_status(
+            job_id=job.id,
+            filename=filename,
+            status="processing",
+            current_stage="vectorization",
+            processing_stages=stage_times
+        )
+        
         print(f"🔢 Creating embeddings from video analysis...")
         try:
             from vector_store import vectorise_and_store_alloydb
             # Delete existing chunks for this document
             db.query(models.DocumentChunk).filter(
-                models.DocumentChunk.document_id == document.id
+                models.DocumentChunk.document_id == doc_record.id
             ).delete(synchronize_session=False)
             db.commit()
             # Vectorize the final text (translated if Hindi, original if English)
-            vectorise_and_store_alloydb(db, document.id, final_text, summary)
+            vectorise_and_store_alloydb(db, doc_record.id, final_text, summary)
             print(f"✅ Embeddings created for video analysis")
         except Exception as e:
             print(f"⚠️ Vectorization failed: {e}")
+        
+        vectorization_end = datetime.now(timezone.utc)
+        stage_times['vectorization'] = (vectorization_end - vectorization_start).total_seconds()
+        
+        # Update processing stages but keep status as PROCESSING (will be updated by graph processor)
+        doc_record.current_stage = "awaiting_graph"
+        doc_record.processing_stages = stage_times
+        db.commit()
+        
+        # Publish status: still processing, awaiting graph
+        redis_pubsub.publish_artifact_status(
+            job_id=job.id,
+            filename=filename,
+            status="processing",
+            current_stage="awaiting_graph",
+            processing_stages=stage_times
+        )
         
         # Step 7: Push to graph processor queue
         print(f"📊 Queuing for graph processing...")
         username = job.user.username if job.user else "unknown"
         redis_pubsub.push_to_queue(settings.REDIS_QUEUE_GRAPH, {
             "job_id": job.id,
-            "document_id": document.id,
+            "document_id": doc_record.id,
             "gcs_text_path": translated_text_path or analysis_path,
-            "username": username
+            "username": username,
+            "filename": filename  # Add filename for status tracking
         })
         
         # Update job progress
         job.processed_files += 1
         db.commit()
         
-        print(f"✅ Completed processing: {filename}")
+        print(f"✅ Completed video processing (awaiting graph): {filename}")
     
     def generate_summary(self, text: str) -> str:
         """

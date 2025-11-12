@@ -125,12 +125,44 @@ class AudioProcessorService:
         3. Detect language and translate if Hindi
         4. Save transcription and translation to GCS
         5. Generate summary
-        6. Create document record
+        6. Create document record with PROCESSING status
+        7. Queue for graph processing (status will be updated by graph processor)
         """
         print(f"Processing audio: {gcs_path}")
         
         filename = os.path.basename(gcs_path)
         is_hindi = 'hindi' in filename.lower()
+        artifact_start_time = datetime.now(timezone.utc)
+        stage_times = {}
+        
+        # Check if document record already exists
+        doc_record = db.query(models.Document).filter(
+            models.Document.job_id == job.id,
+            models.Document.original_filename == filename
+        ).first()
+        
+        if not doc_record:
+            doc_record = models.Document(
+                job_id=job.id,
+                original_filename=filename,
+                file_type=models.FileType.AUDIO,
+                gcs_path=gcs_path,
+                status=models.JobStatus.PROCESSING,
+                started_at=artifact_start_time,
+                current_stage="starting",
+                processing_stages={}
+            )
+            db.add(doc_record)
+            db.commit()
+            db.refresh(doc_record)
+        
+        # Publish artifact status: PROCESSING
+        redis_pubsub.publish_artifact_status(
+            job_id=job.id,
+            filename=filename,
+            status="processing",
+            current_stage="starting"
+        )
         
         # Download audio file to temp
         suffix = os.path.splitext(gcs_path)[1]
@@ -138,11 +170,24 @@ class AudioProcessorService:
         
         try:
             # Step 1: Transcription
-            transcription = self.transcribe_audio(temp_file, filename, is_hindi)
+            transcription_start = datetime.now(timezone.utc)
+            doc_record.current_stage = "transcription"
+            db.commit()
+            redis_pubsub.publish_artifact_status(
+                job_id=job.id,
+                filename=filename,
+                status="processing",
+                current_stage="transcription"
+            )
+            
+            transcription = self.transcribe_audio(temp_file_path, filename, is_hindi)
             
             if not transcription or not transcription.strip():
                 transcription = "[ No transcription available ]"
                 print(f"Empty transcription for {filename}")
+            
+            transcription_end = datetime.now(timezone.utc)
+            stage_times['transcription'] = (transcription_end - transcription_start).total_seconds()
             
             # Determine naming convention based on translation
             # == (two equal signs) for transcription + summary
@@ -159,6 +204,18 @@ class AudioProcessorService:
             final_text = transcription
             
             if is_hindi and transcription != "[ No transcription available ]":
+                translation_start = datetime.now(timezone.utc)
+                doc_record.current_stage = "translation"
+                doc_record.processing_stages = stage_times
+                db.commit()
+                redis_pubsub.publish_artifact_status(
+                    job_id=job.id,
+                    filename=filename,
+                    status="processing",
+                    current_stage="translation",
+                    processing_stages=stage_times
+                )
+                
                 print(f"Translating transcription from Hindi...")
                 try:
                     from document_processor import translate
@@ -188,8 +245,23 @@ class AudioProcessorService:
                 except Exception as e:
                     print(f"Translation failed: {e}")
                     # Continue without translation
+                
+                translation_end = datetime.now(timezone.utc)
+                stage_times['translation'] = (translation_end - translation_start).total_seconds()
             
             # Step 3: Summarization
+            summarization_start = datetime.now(timezone.utc)
+            doc_record.current_stage = "summarization"
+            doc_record.processing_stages = stage_times
+            db.commit()
+            redis_pubsub.publish_artifact_status(
+                job_id=job.id,
+                filename=filename,
+                status="processing",
+                current_stage="summarization",
+                processing_stages=stage_times
+            )
+            
             print(f"Generating summary...")
             summary = self.generate_summary(final_text)
             
@@ -197,56 +269,82 @@ class AudioProcessorService:
             summary_path = gcs_path + f'{equal_prefix}summary.txt'
             storage_manager.upload_text(summary, summary_path)
             
+            summarization_end = datetime.now(timezone.utc)
+            stage_times['summarization'] = (summarization_end - summarization_start).total_seconds()
+            
         finally:
             # Cleanup temp file
-            if os.path.exists(temp_file):
-                os.unlink(temp_file)
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
         
-        # Step 4: Create document record
-        document = models.Document(
-            job_id=job.id,
-            original_filename=filename,
-            file_type=models.FileType.AUDIO,
-            gcs_path=gcs_path,
-            transcription_path=transcription_path,
-            translated_text_path=translated_text_path,
-            summary_path=summary_path,
-            summary_text=summary[:1000] if summary else ""
-        )
-        db.add(document)
+        # Step 4: Update document record with paths
+        doc_record.transcription_path = transcription_path
+        doc_record.translated_text_path = translated_text_path
+        doc_record.summary_path = summary_path
+        doc_record.summary_text = summary[:1000] if summary else ""
         db.commit()
-        db.refresh(document)
+        db.refresh(doc_record)
         
         # Step 5: Vectorize the text
+        vectorization_start = datetime.now(timezone.utc)
+        doc_record.current_stage = "vectorization"
+        doc_record.processing_stages = stage_times
+        db.commit()
+        redis_pubsub.publish_artifact_status(
+            job_id=job.id,
+            filename=filename,
+            status="processing",
+            current_stage="vectorization",
+            processing_stages=stage_times
+        )
+        
         print(f"Creating embeddings from transcription...")
         try:
             from vector_store import vectorise_and_store_alloydb
             # Delete existing chunks for this document
             db.query(models.DocumentChunk).filter(
-                models.DocumentChunk.document_id == document.id
+                models.DocumentChunk.document_id == doc_record.id
             ).delete(synchronize_session=False)
             db.commit()
             # Vectorize the final text (translated if Hindi, original if English)
-            vectorise_and_store_alloydb(db, document.id, final_text, summary)
+            vectorise_and_store_alloydb(db, doc_record.id, final_text, summary)
             print(f"Embeddings created for audio transcription")
         except Exception as e:
             print(f"Vectorization failed: {e}")
+        
+        vectorization_end = datetime.now(timezone.utc)
+        stage_times['vectorization'] = (vectorization_end - vectorization_start).total_seconds()
+        
+        # Update processing stages but keep status as PROCESSING (will be updated by graph processor)
+        doc_record.current_stage = "awaiting_graph"
+        doc_record.processing_stages = stage_times
+        db.commit()
+        
+        # Publish status: still processing, awaiting graph
+        redis_pubsub.publish_artifact_status(
+            job_id=job.id,
+            filename=filename,
+            status="processing",
+            current_stage="awaiting_graph",
+            processing_stages=stage_times
+        )
         
         # Step 6: Push to graph processor queue
         print(f"Queuing for graph processing...")
         username = job.user.username if job.user else "unknown"
         redis_pubsub.push_to_queue(settings.REDIS_QUEUE_GRAPH, {
             "job_id": job.id,
-            "document_id": document.id,
+            "document_id": doc_record.id,
             "gcs_text_path": translated_text_path or transcription_path,
-            "username": username
+            "username": username,
+            "filename": filename  # Add filename for status tracking
         })
         
         # Update job progress
         job.processed_files += 1
         db.commit()
         
-        print(f"Completed processing: {filename}")
+        print(f"Completed audio processing (awaiting graph): {filename}")
     
     def transcribe_audio(self, file_path: str, filename: str, is_hindi: bool = False) -> str:
         """

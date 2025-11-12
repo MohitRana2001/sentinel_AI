@@ -663,11 +663,18 @@ async def upload_documents(
     media_types: List[str] = Form(default=[]),
     languages: List[str] = Form(default=[]),
     suspects: str = Form(default="[]"),
-    case_name: str = Form(default=None),  # NEW: Case name for grouping jobs
+    case_name: str = Form(...),  # MANDATORY: Case name for grouping jobs
     parent_job_id: str = Form(default=None),  # NEW: Parent job ID for extending cases
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    # Validate case_name is provided and non-empty
+    if not case_name or not case_name.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Case name is required and cannot be empty"
+        )
+    
     # Parse suspects from JSON string
     try:
         suspects_data = json.loads(suspects) if suspects else []

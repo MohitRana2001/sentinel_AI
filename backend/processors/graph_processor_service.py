@@ -47,7 +47,8 @@ class GraphProcessorService:
             "job_id": "uuid",
             "document_id": 123,
             "gcs_text_path": "path/to/text.txt",
-            "username": "user@example.com"
+            "username": "user@example.com",
+            "filename": "optional_filename.ext"  # For status tracking
         }
         """
         job_start_time = time.time()
@@ -56,13 +57,39 @@ class GraphProcessorService:
         document_id = message.get("document_id")
         gcs_text_path = message.get("gcs_text_path")
         username = message.get("username", "unknown")
+        filename = message.get("filename")  # May be None for older messages
         
         print(f"Graph Processor received job for document: {document_id}")
         print(f"Username: {username}")
         print(f"Starting graph processing at {time.strftime('%H:%M:%S')}")
         
         db = SessionLocal()
+        document = None
         text = None
+        
+        try:
+            # Get document from database to get filename if not provided
+            document = db.query(models.Document).filter(
+                models.Document.id == document_id
+            ).first()
+            
+            if document and not filename:
+                filename = document.original_filename
+            
+            # Update document status to graph processing
+            if document:
+                document.current_stage = "graph_building"
+                db.commit()
+                if filename:
+                    redis_pubsub.publish_artifact_status(
+                        job_id=job_id,
+                        filename=filename,
+                        status="processing",
+                        current_stage="graph_building"
+                    )
+        except Exception as e:
+            print(f"Error getting document info: {e}")
+        
         try:
             text = storage_manager.download_text(gcs_text_path)
         except Exception as e:
@@ -204,25 +231,47 @@ class GraphProcessorService:
             print(f"Graph building completed for document {document_id}")
             print(f"Total graph processing time: {total_time:.2f} seconds")
             
+            # Mark artifact as COMPLETED after graph processing
+            if document:
+                document.status = models.JobStatus.COMPLETED
+                document.completed_at = datetime.now(timezone.utc)
+                document.current_stage = "completed"
+                
+                # Add graph processing time to stages
+                processing_stages = document.processing_stages or {}
+                processing_stages['graph_building'] = total_time
+                document.processing_stages = processing_stages
+                
+                db.commit()
+                
+                # Publish artifact completion status
+                if filename:
+                    redis_pubsub.publish_artifact_status(
+                        job_id=job_id,
+                        filename=filename,
+                        status="completed",
+                        current_stage="completed",
+                        processing_stages=processing_stages
+                    )
+                    print(f"✅ Artifact {filename} marked as COMPLETED")
+            
             # Check if this was the last document to be processed for this job
             job = db.query(models.ProcessingJob).filter(models.ProcessingJob.id == job_id).first()
             if job:
-                # Count how many documents have been fully processed (have graph entities)
-                documents_with_graphs = db.query(models.Document).join(
-                    models.GraphEntity,
-                    models.Document.id == models.GraphEntity.document_id
-                ).filter(
-                    models.Document.job_id == job_id
-                ).distinct().count()
+                # Count how many documents have been fully processed (status = COMPLETED)
+                documents_completed = db.query(models.Document).filter(
+                    models.Document.job_id == job_id,
+                    models.Document.status == models.JobStatus.COMPLETED
+                ).count()
                 
-                print(f"Job {job_id}: {documents_with_graphs}/{job.total_files} documents have graphs")
+                print(f"Job {job_id}: {documents_completed}/{job.total_files} documents completed")
                 
-                # If all files have been graph-processed, mark job as completed
-                if documents_with_graphs >= job.total_files:
+                # If all files have been completed (including graph processing), mark job as completed
+                if documents_completed >= job.total_files:
                     job.status = models.JobStatus.COMPLETED
                     job.completed_at = datetime.now(timezone.utc)
                     db.commit()
-                    print(f"Job {job_id} marked as COMPLETED")
+                    print(f"✅ Job {job_id} marked as COMPLETED (all artifacts including graphs done)")
                     print(f"Job completion latency from graph start: {total_time:.2f} seconds")
             
         except Exception as e:

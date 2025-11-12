@@ -483,23 +483,23 @@ class DocumentProcessorService:
             embedding_end = datetime.now(timezone.utc)
             stage_times['embeddings'] = (embedding_end - embedding_start).total_seconds()
             
-            # Update document with final status and timing
+            # Update document with processing stages but keep status as PROCESSING
+            # Status will be updated to COMPLETED by graph processor
             if doc_record:
-                doc_record.status = models.JobStatus.COMPLETED
-                doc_record.completed_at = datetime.now(timezone.utc)
+                doc_record.current_stage = "awaiting_graph"
                 doc_record.processing_stages = stage_times
-                doc_record.current_stage = "completed"
                 db.commit()
                 
-                # Publish final artifact status: COMPLETED
+                # Publish artifact status: still processing, awaiting graph
                 redis_pubsub.publish_artifact_status(
                     job_id=job.id,
                     filename=filename,
-                    status="completed",
+                    status="processing",
+                    current_stage="awaiting_graph",
                     processing_stages=stage_times
                 )
             
-            print(f"✅ Document processing completed for {filename}")
+            print(f"✅ Document processing completed for {filename} (awaiting graph)")
             print(f"   Timing breakdown: {stage_times}")
             
             # Step 7: Queue for graph processing
@@ -510,7 +510,8 @@ class DocumentProcessorService:
                 "job_id": job.id,
                 "document_id": document.id,
                 "gcs_text_path": translated_text_path or extracted_text_path,
-                "username": username
+                "username": username,
+                "filename": filename  # Add filename for status tracking
             }
             
             print(f"Graph queue message: {graph_message}")

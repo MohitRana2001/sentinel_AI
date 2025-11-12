@@ -236,7 +236,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        const { status, progress_percentage, error_message } = await response.json();
+        const { 
+          status, 
+          progress_percentage, 
+          error_message, 
+          current_stage, 
+          processing_stages 
+        } = await response.json();
 
         setMediaItems(prev => prev.map(item => 
           item.id === mediaId 
@@ -244,6 +250,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 ...item, 
                 status: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : status === 'processing' ? 'processing' : 'queued',
                 progress: progress_percentage || 0,
+                currentStage: current_stage,
+                processingStages: processing_stages || {},
                 // summary and transcription will come from results endpoint
               }
             : item

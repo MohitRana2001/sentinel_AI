@@ -11,6 +11,7 @@ import { FileText, Music, Video, Phone, Clock, CheckCircle, XCircle, Loader2, Us
 import { Button } from "@/components/ui/button";
 import { apiClient } from "@/lib/api-client";
 import { useRouter } from "next/navigation";
+import { formatTime, formatProcessingStages, getTotalTime } from "@/lib/time-utils";
 
 type DashboardTab = 'upload' | 'suspects' | 'history';
 
@@ -116,6 +117,16 @@ export function AnalystDashboard() {
                   <div className="text-sm text-muted-foreground space-y-1">
                     <p>Size: {item.fileSize.toFixed(2)} MB</p>
                     {item.language && <p>Language: {item.language}</p>}
+                    
+                    {/* Current Stage */}
+                    {item.currentStage && item.status === 'processing' && (
+                      <p className="text-blue-600 font-medium">
+                        <Loader2 className="inline h-3 w-3 animate-spin mr-1" />
+                        {item.currentStage.replace(/_/g, ' ')}
+                      </p>
+                    )}
+                    
+                    {/* Processing Progress */}
                     {item.status === 'processing' && item.progress !== undefined && (
                       <div className="mt-2">
                         <div className="flex items-center justify-between mb-1">
@@ -130,6 +141,22 @@ export function AnalystDashboard() {
                         </div>
                       </div>
                     )}
+                    
+                    {/* Processing Timing */}
+                    {item.processingStages && Object.keys(item.processingStages).length > 0 && (
+                      <div className="mt-2 p-2 bg-slate-50 rounded text-xs space-y-1">
+                        <p className="font-medium text-slate-700">Processing Time:</p>
+                        {Object.entries(item.processingStages).map(([stage, time]) => (
+                          <p key={stage} className="text-slate-600">
+                            • {stage.replace(/_/g, ' ')}: <span className="font-mono">{formatTime(time)}</span>
+                          </p>
+                        ))}
+                        <p className="font-medium text-slate-700 pt-1 border-t">
+                          Total: <span className="font-mono">{formatTime(getTotalTime(item.processingStages))}</span>
+                        </p>
+                      </div>
+                    )}
+                    
                     {item.status === 'completed' && item.summary && (
                       <div className="mt-2 p-2 bg-muted rounded">
                         <p className="text-xs font-medium mb-1">Summary:</p>

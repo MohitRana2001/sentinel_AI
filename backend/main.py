@@ -20,6 +20,7 @@ from models import RBACLevel
 from storage_config import storage_manager
 from redis_pubsub import redis_pubsub
 from vector_store import VectorStore
+from cdr_processor import cdr_processor
 try:
     from langchain_neo4j import Neo4jGraph
 except Exception:
@@ -772,6 +773,52 @@ async def upload_documents(
     db.commit()
     db.refresh(job)
     
+    # Save suspects to database
+    for suspect_data in suspects_data:
+        suspect = models.Suspect(
+            id=suspect_data.get('id', str(uuid.uuid4())),
+            job_id=job_id,
+            fields=suspect_data.get('fields', [])
+        )
+        db.add(suspect)
+    
+    if suspects_data:
+        db.commit()
+        print(f"Saved {len(suspects_data)} suspects for job {job_id}")
+    
+    # Process CDR files synchronously (no queue needed)
+    cdr_files_processed = 0
+    for filename, file_type in zip(filenames, job_file_types):
+        if file_type == 'cdr':
+            try:
+                gcs_path = f"{gcs_prefix}{filename}"
+                print(f"Processing CDR file: {filename}")
+                
+                # Download and convert CDR to JSONB
+                cdr_data = cdr_processor.process_cdr_file(gcs_path)
+                cdr_processor.validate_cdr_data(cdr_data)
+                
+                # Save CDR record to database
+                cdr_record = models.CDRRecord(
+                    job_id=job_id,
+                    original_filename=filename,
+                    file_path=gcs_path,
+                    data=cdr_data,
+                    record_count=len(cdr_data)
+                )
+                db.add(cdr_record)
+                db.commit()
+                
+                cdr_files_processed += 1
+                job.processed_files += 1
+                db.commit()
+                
+                print(f"✅ CDR file processed: {filename} ({len(cdr_data)} records)")
+            except Exception as e:
+                print(f"❌ Error processing CDR file {filename}: {e}")
+                job.error_message = f"CDR processing error: {str(e)}"
+                db.commit()
+    
     # Push per-file messages to Redis queues for true parallel processing
     # Each file gets its own message in a queue, distributed to available workers
     messages_queued = 0
@@ -785,16 +832,19 @@ async def upload_documents(
             redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_AUDIO)
             messages_queued += 1
         elif file_type == 'video':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO, message_metadata)
             messages_queued += 1
+        # CDR files are processed synchronously above, no queue needed
     
-    print(f"Job {job_id} created and queued for processing ({messages_queued} messages in queue)")
+    print(f"Job {job_id} created: {messages_queued} queued, {cdr_files_processed} CDR processed")
     
     return {
         "job_id": job_id,
         "status": "queued",
         "total_files": len(files),
-        "message": f"Successfully uploaded {len(files)} files. Processing started."
+        "suspects_count": len(suspects_data),
+        "cdr_processed": cdr_files_processed,
+        "message": f"Successfully uploaded {len(files)} files and {len(suspects_data)} suspects. Processing started."
     }
 
 @app.get(f"{settings.API_PREFIX}/jobs/{{job_id:path}}/status")
@@ -827,6 +877,8 @@ async def get_job_status(
         "total_files": job.total_files,
         "processed_files": job.processed_files,
         "progress_percentage": round(progress_percentage, 2),
+        "current_stage": job.current_stage,
+        "processing_stages": job.processing_stages or {},
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
         "error_message": job.error_message

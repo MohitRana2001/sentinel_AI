@@ -13,6 +13,8 @@ interface JobStatus {
   total_files: number
   processed_files: number
   progress_percentage: number
+  current_stage: string | null
+  processing_stages: Record<string, number>
   started_at: string | null
   completed_at: string | null
   error_message: string | null
@@ -129,7 +131,8 @@ class ApiClient {
   }
 
   async getJobResults(jobId: string): Promise<JobResults> {
-    const response = await fetch(`${this.baseUrl}/jobs/${jobId}/results`, {
+    const encodedJobId = encodeURIComponent(jobId);
+    const response = await fetch(`${this.baseUrl}/jobs/${encodedJobId}/results`, {
       headers: this.getAuthHeaders(),
     })
 

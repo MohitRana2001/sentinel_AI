@@ -127,6 +127,8 @@ export interface MediaItem {
   transcription?: string
   duration?: number // For audio/video in seconds
   thumbnailUrl?: string // For video
+  currentStage?: string // Current processing stage
+  processingStages?: Record<string, number> // Stage timing data
 }
 
 export interface Document extends MediaItem {

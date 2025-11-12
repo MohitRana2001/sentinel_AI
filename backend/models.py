@@ -72,6 +72,10 @@ class ProcessingJob(Base):
     total_files = Column(Integer, default=0)
     processed_files = Column(Integer, default=0)
     
+    # Timing information for each processing stage
+    processing_stages = Column(JSON, default=dict)  # {"document_processing": 12.5, "graph_building": 8.3, ...}
+    current_stage = Column(String)  # Current processing stage
+    
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
@@ -237,3 +241,67 @@ class PersonOfInterest(Base):
             postgresql_with={"lists": 100}
         ),
     )
+
+class CDRRecord(Base):
+    """CDR (Call Data Records) stored as JSONB"""
+    __tablename__ = "cdr_records"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=False, index=True)
+    
+    # Original file information
+    original_filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)  # GCS path to original file
+    
+    # CDR data in JSONB format (array of call records)
+    data = Column(JSONB, nullable=False)  # [{"caller": "...", "called": "...", "timestamp": "...", ...}, ...]
+    
+    # Metadata
+    record_count = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship
+    job = relationship("ProcessingJob", backref="cdr_records")
+    
+    __table_args__ = (
+        Index("ix_cdr_job_id", "job_id"),
+    )
+
+
+EMBEDDING_GEMMA_DIM = 768 
+
+PHOTO_VECTOR_DIM = 1024 
+
+# class PersonOfInterest(Base):
+#     __tablename__ = "person_of_interest"
+
+#     id = Column(Integer, primary_key=True, index=True)
+    
+#     name = Column(String, index=True, nullable=False)
+    
+#     details = Column(JSONB, nullable=False)
+    
+#     photograph_base64 = Column(Text, nullable=True)
+    
+#     details_embedding = Column(Vector(EMBEDDING_GEMMA_DIM))
+    
+#     photograph_embedding = Column(Vector(PHOTO_VECTOR_DIM))
+    
+#     created_at = Column(DateTime, default=datetime.utcnow)
+#     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+#     __table_args__ = (
+#         Index(
+#             "ix_poi_details_embedding",
+#             "details_embedding",
+#             postgresql_using="ivfflat",
+#             postgresql_with={"lists": 100}
+#         ),
+#         Index(
+#             "ix_poi_photo_embedding",
+#             "photograph_embedding",
+#             postgresql_using="ivfflat",
+#             postgresql_with={"lists": 100}
+#         ),
+#     )

@@ -3,32 +3,31 @@
 import React, { useState, useEffect } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { MediaUploadCard } from "@/components/upload/media-upload-card";
+import { UnifiedUpload } from "@/components/upload/unified-upload";
 import { SuspectManagement } from "./suspect-management";
 import { useAuth } from "@/context/auth-context";
-import type { MediaType, MediaItem } from "@/types";
-import { FileText, Music, Video, Phone, Clock, CheckCircle, XCircle, Loader2, Users, History } from "lucide-react";
+import type { MediaType, MediaItem, FileWithMetadata, Suspect } from "@/types";
+import { FileText, Music, Video, Phone, Clock, CheckCircle, XCircle, Loader2, Users, History, Upload as UploadIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiClient } from "@/lib/api-client";
+import { useRouter } from "next/navigation";
 
-type DashboardTab = MediaType | 'suspects' | 'history';
+type DashboardTab = 'upload' | 'suspects' | 'history';
 
 export function AnalystDashboard() {
-  const { uploadMedia, mediaItems } = useAuth();
-  const [activeTab, setActiveTab] = useState<DashboardTab>("document");
-  const [uploading, setUploading] = useState<Record<MediaType, boolean>>({
-    document: false,
-    audio: false,
-    video: false,
-    cdr: false,
-  });
+  const { uploadJob, mediaItems } = useAuth();
+  const router = useRouter();
+  const [activeTab, setActiveTab] = useState<DashboardTab>("upload");
+  const [suspects, setSuspects] = useState<Suspect[]>([]);
   const [pastJobs, setPastJobs] = useState<any[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
 
-  // Load past jobs on mount
+  // Load past jobs on mount AND when switching to history tab
   useEffect(() => {
-    loadPastJobs();
-  }, []);
+    if (activeTab === 'history') {
+      loadPastJobs();
+    }
+  }, [activeTab]);
 
   const loadPastJobs = async () => {
     try {
@@ -42,18 +41,13 @@ export function AnalystDashboard() {
     }
   };
 
-  const handleUpload = (mediaType: MediaType) => {
-    return async (file: File, language?: string) => {
-      setUploading(prev => ({ ...prev, [mediaType]: true }));
-      try {
-        await uploadMedia(file, mediaType, language);
-      } catch (error) {
-        console.error(`Upload failed:`, error);
-        throw error;
-      } finally {
-        setUploading(prev => ({ ...prev, [mediaType]: false }));
-      }
-    };
+  const handleUpload = async (files: FileWithMetadata[], jobSuspects: Suspect[]) => {
+    await uploadJob({ files, suspects: jobSuspects });
+  };
+
+  const handleViewResults = (jobId: string) => {
+    // Navigate to results page with the job ID
+    router.push(`/results?jobId=${encodeURIComponent(jobId)}`);
   };
 
   const getMediaItemsByType = (type: MediaType): MediaItem[] => {
@@ -173,22 +167,10 @@ export function AnalystDashboard() {
       </div>
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as DashboardTab)}>
-        <TabsList className="grid w-full grid-cols-6">
-          <TabsTrigger value="document" className="flex items-center gap-2">
-            <FileText className="h-4 w-4" />
-            Documents
-          </TabsTrigger>
-          <TabsTrigger value="audio" className="flex items-center gap-2">
-            <Music className="h-4 w-4" />
-            Audio
-          </TabsTrigger>
-          <TabsTrigger value="video" className="flex items-center gap-2">
-            <Video className="h-4 w-4" />
-            Video
-          </TabsTrigger>
-          <TabsTrigger value="cdr" className="flex items-center gap-2">
-            <Phone className="h-4 w-4" />
-            CDR
+        <TabsList className="grid w-full grid-cols-3">
+          <TabsTrigger value="upload" className="flex items-center gap-2">
+            <UploadIcon className="h-4 w-4" />
+            Upload
           </TabsTrigger>
           <TabsTrigger value="suspects" className="flex items-center gap-2">
             <Users className="h-4 w-4" />
@@ -200,100 +182,20 @@ export function AnalystDashboard() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="document" className="mt-6">
+        <TabsContent value="upload" className="mt-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div>
-              <MediaUploadCard
-                mediaType="document"
-                onUpload={handleUpload("document")}
-                isUploading={uploading.document}
-              />
-            </div>
-            <div>
+            <UnifiedUpload onUpload={handleUpload} suspects={suspects} />
+            
+            <div className="space-y-4">
               <Card>
                 <CardHeader>
-                  <CardTitle>Uploaded Documents</CardTitle>
+                  <CardTitle>Recent Uploads</CardTitle>
                   <CardDescription>
-                    {getMediaItemsByType('document').length} document(s) uploaded
+                    {mediaItems.length} item(s) uploaded
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <MediaItemsList items={getMediaItemsByType('document')} />
-                </CardContent>
-              </Card>
-            </div>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="audio" className="mt-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div>
-              <MediaUploadCard
-                mediaType="audio"
-                onUpload={handleUpload("audio")}
-                isUploading={uploading.audio}
-              />
-            </div>
-            <div>
-              <Card>
-                <CardHeader>
-                  <CardTitle>Uploaded Audio Files</CardTitle>
-                  <CardDescription>
-                    {getMediaItemsByType('audio').length} audio file(s) uploaded
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <MediaItemsList items={getMediaItemsByType('audio')} />
-                </CardContent>
-              </Card>
-            </div>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="video" className="mt-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div>
-              <MediaUploadCard
-                mediaType="video"
-                onUpload={handleUpload("video")}
-                isUploading={uploading.video}
-              />
-            </div>
-            <div>
-              <Card>
-                <CardHeader>
-                  <CardTitle>Uploaded Video Files</CardTitle>
-                  <CardDescription>
-                    {getMediaItemsByType('video').length} video file(s) uploaded
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <MediaItemsList items={getMediaItemsByType('video')} />
-                </CardContent>
-              </Card>
-            </div>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="cdr" className="mt-6">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div>
-              <MediaUploadCard
-                mediaType="cdr"
-                onUpload={handleUpload("cdr")}
-                isUploading={uploading.cdr}
-              />
-            </div>
-            <div>
-              <Card>
-                <CardHeader>
-                  <CardTitle>Uploaded CDR Files</CardTitle>
-                  <CardDescription>
-                    {getMediaItemsByType('cdr').length} CDR file(s) uploaded
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <MediaItemsList items={getMediaItemsByType('cdr')} />
+                  <MediaItemsList items={mediaItems.slice(0, 10)} />
                 </CardContent>
               </Card>
             </div>
@@ -301,7 +203,10 @@ export function AnalystDashboard() {
         </TabsContent>
 
         <TabsContent value="suspects" className="mt-6">
-          <SuspectManagement />
+          <SuspectManagement 
+            suspects={suspects}
+            onSuspectsChange={setSuspects}
+          />
         </TabsContent>
 
         <TabsContent value="history" className="mt-6">
@@ -362,6 +267,12 @@ export function AnalystDashboard() {
                             <span>
                               {job.processed_files}/{job.total_files} files
                             </span>
+                            {job.suspects_count > 0 && (
+                              <span className="flex items-center gap-1">
+                                <Users className="h-3 w-3" />
+                                {job.suspects_count} suspect(s)
+                              </span>
+                            )}
                             <span>
                               {Math.round(job.progress_percentage)}% complete
                             </span>
@@ -369,7 +280,10 @@ export function AnalystDashboard() {
                           </div>
                         </div>
                         {job.status === "completed" && (
-                          <Button variant="outline">
+                          <Button 
+                            variant="outline"
+                            onClick={() => handleViewResults(job.job_id)}
+                          >
                             View Results
                           </Button>
                         )}

@@ -1,8 +1,9 @@
-from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from sqlalchemy.orm import Session
 import uuid
+import json
 
 import enum
 from pydantic import BaseModel, EmailStr
@@ -588,17 +589,34 @@ async def analyst_get_jobs(
 @app.post(f"{settings.API_PREFIX}/upload")
 async def upload_documents(
     files: List[UploadFile] = File(...),
-    media_type: Optional[str] = None,  # NEW: 'document', 'audio', 'video', 'cdr'
-    language: Optional[str] = None,     # NEW: For audio/video transcription
+    media_types: List[str] = Form([]),      # NEW: List of media types (one per file)
+    languages: List[str] = Form([]),         # NEW: List of languages (one per file, empty string if N/A)
+    suspects: Optional[str] = Form(None),    # NEW: JSON string of suspects data
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # Validation: Language required for audio/video
-    if media_type in ['audio', 'video'] and not language:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Language parameter is required for {media_type} files"
-        )
+    """
+    Unified upload endpoint - supports multiple media types in one job + suspects
+    """
+    
+    # Parse suspects if provided
+    suspects_data = []
+    if suspects:
+        try:
+            suspects_data = json.loads(suspects)
+        except Exception as e:
+            print(f"Warning: Failed to parse suspects data: {e}")
+    
+    # Parse media_types and languages arrays
+    file_media_types = media_types if media_types else []
+    file_languages = languages if languages else []
+    
+    # Ensure we have media_types and languages for each file
+    # If not provided, we'll infer from file extension
+    while len(file_media_types) < len(files):
+        file_media_types.append("")
+    while len(file_languages) < len(files):
+        file_languages.append("")
     
     # Validation checks
     if len(files) > settings.MAX_UPLOAD_FILES:
@@ -670,10 +688,14 @@ async def upload_documents(
     print(f"Starting upload for job {job_id}: {len(files)} files")
     
     filenames = []
-    file_types = []
-    languages = []  # NEW: Store language for each file
+    job_file_types = []
+    job_languages = []  # Store language for each file
     
-    for file in files:
+    # Process each file with its metadata
+    for idx, file in enumerate(files):
+        media_type = file_media_types[idx] if idx < len(file_media_types) else ""
+        language = file_languages[idx] if idx < len(file_languages) else ""
+        
         try:
             gcs_path = f"{gcs_prefix}{file.filename}"
             storage_manager.upload_file(file.file, gcs_path)
@@ -697,8 +719,8 @@ async def upload_documents(
                 else:
                     current_file_type = 'document'
             
-            file_types.append(current_file_type)
-            languages.append(language)  # Store language (None for document/cdr)
+            job_file_types.append(current_file_type)
+            job_languages.append(language)  # Store language (empty string for document/cdr)
             
             print(f"Uploaded: {file.filename} to {gcs_path} (type: {current_file_type}, lang: {language})")
         except Exception as e:
@@ -713,7 +735,7 @@ async def upload_documents(
         user_id=current_user.id,
         gcs_prefix=gcs_prefix,
         original_filenames=filenames,
-        file_types=file_types,
+        file_types=job_file_types,
         total_files=len(files),
         status=models.JobStatus.QUEUED
     )
@@ -722,10 +744,23 @@ async def upload_documents(
     db.commit()
     db.refresh(job)
     
+    # Save suspects to database
+    for suspect_data in suspects_data:
+        suspect = models.Suspect(
+            id=suspect_data.get('id', str(uuid.uuid4())),
+            job_id=job_id,
+            fields=suspect_data.get('fields', [])
+        )
+        db.add(suspect)
+    
+    if suspects_data:
+        db.commit()
+        print(f"Saved {len(suspects_data)} suspects for job {job_id}")
+    
     # Push per-file messages to Redis queues for true parallel processing
     # Each file gets its own message in a queue, distributed to available workers
     messages_queued = 0
-    for filename, file_type, lang in zip(filenames, file_types, languages):
+    for filename, file_type, lang in zip(filenames, job_file_types, job_languages):
         gcs_path = f"{gcs_prefix}{filename}"
         
         # Prepare message with language metadata
@@ -750,7 +785,8 @@ async def upload_documents(
         "job_id": job_id,
         "status": "queued",
         "total_files": len(files),
-        "message": f"Successfully uploaded {len(files)} files. Processing started."
+        "suspects_count": len(suspects_data),
+        "message": f"Successfully uploaded {len(files)} files and {len(suspects_data)} suspects. Processing started."
     }
 
 @app.get(f"{settings.API_PREFIX}/jobs/{{job_id:path}}/status")
@@ -814,6 +850,12 @@ async def get_job_results(
     )
     documents = filter_documents_scope(documents_query, current_user).all()
     
+    # Get suspects for this job
+    suspects_query = db.query(models.Suspect).filter(
+        models.Suspect.job_id == job_id
+    )
+    suspects = suspects_query.all()
+    
     return {
         "job_id": job.id,
         "status": job.status.value,
@@ -827,6 +869,15 @@ async def get_job_results(
                 "created_at": doc.created_at.isoformat()
             }
             for doc in documents
+        ],
+        "suspects": [
+            {
+                "id": suspect.id,
+                "fields": suspect.fields,
+                "created_at": suspect.created_at.isoformat(),
+                "updated_at": suspect.updated_at.isoformat()
+            }
+            for suspect in suspects
         ]
     }
 
@@ -845,17 +896,24 @@ async def get_user_jobs(
     query = filter_jobs_scope(query, current_user)
     jobs = query.limit(limit).offset(offset).all()
     
-    return [
-        {
+    result = []
+    for job in jobs:
+        # Get suspects count for this job
+        suspects_count = db.query(models.Suspect).filter(
+            models.Suspect.job_id == job.id
+        ).count()
+        
+        result.append({
             "job_id": job.id,
             "status": job.status.value,
             "total_files": job.total_files,
             "processed_files": job.processed_files,
+            "suspects_count": suspects_count,
             "created_at": job.created_at.isoformat(),
             "progress_percentage": (job.processed_files / job.total_files * 100) if job.total_files > 0 else 0
-        }
-        for job in jobs
-    ]
+        })
+    
+    return result
 
 
 

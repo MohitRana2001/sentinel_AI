@@ -152,6 +152,18 @@ export interface DocumentHistory {
   documents: Document[]
 }
 
+// Upload Job - Can contain multiple media types
+export interface UploadJob {
+  files: FileWithMetadata[]
+  suspects: Suspect[]
+}
+
+export interface FileWithMetadata {
+  file: File
+  mediaType: MediaType
+  language?: string // For audio/video
+}
+
 export interface AuthContextType {
   user: User | null
   isAuthenticated: boolean
@@ -168,4 +180,5 @@ export interface AuthContextType {
   mediaItems: MediaItem[]
   addDocument: (document: Document) => void
   uploadMedia: (file: File, mediaType: MediaType, language?: string) => Promise<void>
+  uploadJob: (job: UploadJob) => Promise<void> // NEW: Unified upload
 }

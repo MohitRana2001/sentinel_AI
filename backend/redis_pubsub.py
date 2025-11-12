@@ -47,7 +47,7 @@ class RedisPubSub:
         message_json = json.dumps(message)
         return self.redis_client.lpush(queue_name, message_json)
     
-    def push_file_to_queue(self, job_id: str, gcs_path: str, filename: str, queue_name: str) -> int:
+    def push_file_to_queue(self, job_id: str, gcs_path: str, filename: str, queue_name: str, metadata: Dict[str, Any] = None) -> int:
         """Push file to queue for parallel processing by multiple workers"""
         message = {
             "job_id": job_id,
@@ -55,6 +55,9 @@ class RedisPubSub:
             "filename": filename,
             "action": "process_file"
         }
+        # Merge additional metadata if provided
+        if metadata:
+            message.update(metadata)
         return self.push_to_queue(queue_name, message)
     
     def subscribe(self, channel: str):

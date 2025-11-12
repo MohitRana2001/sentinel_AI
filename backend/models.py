@@ -198,7 +198,24 @@ class ActivityLog(Base):
     details = Column(JSON)
     
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class Suspect(Base):
+    """Suspects linked to processing jobs"""
+    __tablename__ = "suspects"
     
+    id = Column(String, primary_key=True, index=True)  # UUID from frontend
+    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=False)
+    
+    # Suspect data stored as JSON (flexible key-value fields)
+    fields = Column(JSON, nullable=False)  # Array of {id, key, value}
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship
+    job = relationship("ProcessingJob", backref="suspects")
+
 
 EMBEDDING_GEMMA_DIM = 768 
 

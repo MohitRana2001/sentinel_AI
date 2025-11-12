@@ -259,6 +259,65 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }, 2000);
   }, [token]);
 
+  // NEW: Unified upload for multiple media types + suspects in one job
+  const uploadJob = useCallback(async (job: { files: any[]; suspects: any[] }) => {
+    if (!token) {
+      throw new Error("Not authenticated");
+    }
+
+    const formData = new FormData();
+    
+    // Add all files with their metadata
+    job.files.forEach((fileWithMeta, index) => {
+      formData.append('files', fileWithMeta.file);
+      formData.append(`media_types`, fileWithMeta.mediaType);
+      if (fileWithMeta.language) {
+        formData.append(`languages`, fileWithMeta.language);
+      } else {
+        formData.append(`languages`, '');  // Empty string for files without language
+      }
+    });
+
+    // Add suspects data as JSON
+    if (job.suspects.length > 0) {
+      formData.append('suspects', JSON.stringify(job.suspects));
+    }
+
+    const response = await fetch(`${API_BASE_URL}/upload`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+      body: formData
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
+      throw new Error(error.detail || 'Upload failed');
+    }
+
+    const { job_id, status } = await response.json();
+
+    // Add all files to mediaItems state
+    job.files.forEach((fileWithMeta) => {
+      const newItem: MediaItem = {
+        id: `${job_id}-${fileWithMeta.file.name}`,
+        fileName: fileWithMeta.file.name,
+        mediaType: fileWithMeta.mediaType,
+        uploadedAt: new Date().toISOString(),
+        fileSize: fileWithMeta.file.size / 1024 / 1024,
+        status: 'queued',
+        jobId: job_id,
+        language: fileWithMeta.language,
+        progress: 0
+      };
+      setMediaItems(prev => [newItem, ...prev]);
+    });
+
+    // Start polling for status
+    pollJobStatus(job_id, job_id);
+  }, [token]);
+
   const contextValue = useMemo<AuthContextType>(
     () => ({
       user,
@@ -270,8 +329,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       mediaItems,
       addDocument,
       uploadMedia,
+      uploadJob,
     }),
-    [addDocument, documents, mediaItems, login, logout, signup, uploadMedia, user]
+    [addDocument, documents, mediaItems, login, logout, signup, uploadMedia, uploadJob, user]
   );
 
   return (

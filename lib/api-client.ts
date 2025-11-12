@@ -29,6 +29,16 @@ interface JobResults {
     summary: string | null
     created_at: string
   }>
+  suspects: Array<{
+    id: string
+    fields: Array<{
+      id: string
+      key: string
+      value: string
+    }>
+    created_at: string
+    updated_at: string
+  }>
 }
 
 interface DocumentContent {

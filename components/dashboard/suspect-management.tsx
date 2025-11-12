@@ -189,9 +189,13 @@ function SuspectCard({ suspect, suspectIndex, onUpdate, onDelete }: SuspectCardP
   );
 }
 
-export function SuspectManagement() {
-  const [suspects, setSuspects] = useState<Suspect[]>([]);
-
+export function SuspectManagement({ 
+  suspects, 
+  onSuspectsChange 
+}: {
+  suspects: Suspect[]
+  onSuspectsChange: (suspects: Suspect[]) => void
+}) {
   const addSuspect = () => {
     const newSuspect: Suspect = {
       id: `suspect-${Date.now()}`,
@@ -199,11 +203,11 @@ export function SuspectManagement() {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    setSuspects([...suspects, newSuspect]);
+    onSuspectsChange([...suspects, newSuspect]);
   };
 
   const updateSuspect = (suspectId: string, fields: SuspectField[]) => {
-    setSuspects(suspects.map(suspect =>
+    onSuspectsChange(suspects.map(suspect =>
       suspect.id === suspectId
         ? { ...suspect, fields, updatedAt: new Date().toISOString() }
         : suspect
@@ -211,7 +215,7 @@ export function SuspectManagement() {
   };
 
   const deleteSuspect = (suspectId: string) => {
-    setSuspects(suspects.filter(suspect => suspect.id !== suspectId));
+    onSuspectsChange(suspects.filter(suspect => suspect.id !== suspectId));
   };
 
   const exportData = () => {
@@ -234,7 +238,7 @@ export function SuspectManagement() {
       try {
         const data = JSON.parse(e.target?.result as string);
         if (data.suspects && Array.isArray(data.suspects)) {
-          setSuspects(data.suspects);
+          onSuspectsChange(data.suspects);
         }
       } catch (error) {
         console.error('Failed to import suspects:', error);

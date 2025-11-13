@@ -116,7 +116,10 @@ class JobWithAnalyst(BaseModel):
 class PersonOfInterestCreate(BaseModel):
     name: str
     details: Dict[str, Any]
-    photograph_base64: Optional[str] = None
+
+class PersonOfInterestUpdate(BaseModel):
+    name: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
 # --- END: PYDANTIC MODELS ---
 
 
@@ -233,14 +236,6 @@ def get_poi_embedding_model():
         # base_url=f"http://{settings.CHAT_LLM_HOST}:11434"
         base_url="http://127.0.0.1:11434"  
     )
-
-def get_photo_embedding(base64_str: str) -> List[float]:
-    """
-    Placeholder for generating vision embeddings from a base64 image.
-    TODO: Shounak to provide the vision model logic here.
-    """
-    # Returning a zero-vector of dimension 1024 as a placeholder
-    return [0.0] * 1024
 
 # --- START: USER MANAGEMENT ENDPOINTS ---
 
@@ -632,17 +627,7 @@ async def create_person_of_interest(
         print(f"Error generating text embedding: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate text embedding: {str(e)}")
 
-    # 2. Generate Photo Embedding
-    photo_embedding = None
-    if poi_in.photograph_base64:
-        try:
-            photo_embedding = get_photo_embedding(poi_in.photograph_base64)
-            print(f"Generated photo embedding of length: {len(photo_embedding)}")
-        except Exception as e:
-            print(f"Error generating photo embedding: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to generate photo embedding: {str(e)}")
-
-    # 3. Save to Database
+    # 2. Save to Database
     new_poi = models.PersonOfInterest(
         name=poi_in.name,
         details=poi_in.details,
@@ -656,6 +641,52 @@ async def create_person_of_interest(
     db.refresh(new_poi)
     
     return {"id": new_poi.id, "name": new_poi.name, "message": "Person of Interest created successfully"}
+
+
+@app.put(f"{settings.API_PREFIX}/person-of-interest/{{poi_id}}")
+async def update_person_of_interest(
+    poi_id: int,
+    poi_update: PersonOfInterestUpdate,
+    db: Session = Depends(get_db),
+):
+    """
+    Updates a Person of Interest. 
+    If 'details' are changed, it OVERWRITES the old data 
+    and RE-CALCULATES the vector embedding immediately.
+    """
+    
+    # Find the existing record
+    poi = db.query(models.PersonOfInterest).filter(models.PersonOfInterest.id == poi_id).first()
+    if not poi:
+        raise HTTPException(status_code=404, detail="Person of Interest not found")
+
+    # Update basic fields if provided
+    if poi_update.name:
+        poi.name = poi_update.name
+        
+    if poi_update.details:
+        print(f"Details changed for {poi.name}. Overwriting data and re-calculating vector...")
+        
+        poi.details = poi_update.details
+        
+        details_str = ". ".join([f"{k}: {v}" for k, v in poi_update.details.items()])
+        
+        try:
+            embed_model = get_poi_embedding_model()
+            new_embedding = embed_model.embed_query(details_str)
+            
+            poi.details_embedding = new_embedding
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to update embedding: {str(e)}")
+
+    db.commit()
+    db.refresh(poi)
+    
+    return {
+        "id": poi.id, 
+        "message": "Person of Interest updated. Old data is gone, new vector is live."
+    }
 
 @app.post(f"{settings.API_PREFIX}/upload")
 async def upload_documents(

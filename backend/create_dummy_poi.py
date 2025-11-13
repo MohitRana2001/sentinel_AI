@@ -5,11 +5,13 @@ url = "http://localhost:8000/api/v1/person-of-interest"
 payload = {
     "name": "Lawrence Bishnoi",
     "details": {
-        "Names": ["Lawrence Bishnoi", "Sopu Group"],
+        "Names": ["Lawrence Bishnoi", "Sopu Group", "Don],
         "Status": "Gangster",
         "State": ["Punjab", "Haryana"]
+        "Father Name": "Lavinder Singh",
+        "Resident Of": "Punjab",
+        "Crimes": ["Extortion", "Murder", "Arms Act"]
     },
-    "photograph_base64": ""
 }
 
 try:

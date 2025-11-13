@@ -559,15 +559,25 @@ async def manager_get_jobs(
     db: Session = Depends(get_db),
     manager_user: models.User = Depends(get_manager)
 ):
-    """Manager endpoint to get all jobs from their analysts."""
+    """Manager endpoint to get all jobs from their analysts. Excludes CDR-only jobs."""
     query = db.query(models.ProcessingJob).order_by(
         models.ProcessingJob.created_at.desc()
     )
     query = filter_jobs_scope(query, manager_user)
     jobs = query.limit(limit).offset(offset).all()
     
+    # Filter helper for CDR-only jobs
+    def is_cdr_only_job(job):
+        if not job.file_types or len(job.file_types) == 0:
+            return False
+        return all(ft == 'cdr' for ft in job.file_types)
+    
     result = []
     for job in jobs:
+        # Skip CDR-only jobs
+        if is_cdr_only_job(job):
+            continue
+            
         analyst = job.user
         progress = (job.processed_files / job.total_files * 100) if job.total_files > 0 else 0
         
@@ -592,7 +602,7 @@ async def analyst_get_jobs(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Analyst endpoint to get their own jobs."""
+    """Analyst endpoint to get their own jobs. Excludes CDR-only jobs."""
     if current_user.rbac_level != models.RBACLevel.ANALYST:
         raise HTTPException(status_code=403, detail="Analyst access required")
     
@@ -601,6 +611,12 @@ async def analyst_get_jobs(
     ).order_by(models.ProcessingJob.created_at.desc())
     
     jobs = query.limit(limit).offset(offset).all()
+    
+    # Filter out CDR-only jobs (jobs where all file_types are 'cdr')
+    def is_cdr_only_job(job):
+        if not job.file_types or len(job.file_types) == 0:
+            return False
+        return all(ft == 'cdr' for ft in job.file_types)
     
     return [
         {
@@ -612,6 +628,7 @@ async def analyst_get_jobs(
             "progress_percentage": (job.processed_files / job.total_files * 100) if job.total_files > 0 else 0
         }
         for job in jobs
+        if not is_cdr_only_job(job)
     ]
 
 # --- END: USER MANAGEMENT ENDPOINTS ---

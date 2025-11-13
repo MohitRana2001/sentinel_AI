@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { UnifiedUpload } from "@/components/upload/unified-upload";
-import { SuspectManagement } from "./suspect-management";
+import { PersonOfInterestManagement } from "./person-of-interest-management";
 import { CaseGroupedJobs } from "./case-grouped-jobs";
 import { useAuth } from "@/context/auth-context";
 import type { MediaType, MediaItem, FileWithMetadata, Suspect } from "@/types";
@@ -251,7 +251,7 @@ export function AnalystDashboard() {
         </TabsContent>
 
         <TabsContent value="suspects" className="mt-6">
-          <SuspectManagement 
+          <PersonOfInterestManagement 
             suspects={suspects}
             onSuspectsChange={setSuspects}
           />

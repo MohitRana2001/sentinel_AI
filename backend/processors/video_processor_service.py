@@ -74,8 +74,10 @@ class VideoProcessorService:
         job_id = message.get("job_id")
         gcs_path = message.get("gcs_path")
         filename = message.get("filename")
+        metadata = message.get("metadata", {})
+        language = metadata.get("language", None)
         
-        print(f"🎬 Video Processor received file: {filename} (job: {job_id})")
+        print(f"🎬 Video Processor received file: {filename} (job: {job_id}, language: {language})")
         
         db = SessionLocal()
         try:
@@ -106,7 +108,7 @@ class VideoProcessorService:
                 return
             
             # Process this file
-            self.process_video(db, job, gcs_path)
+            self.process_video(db, job, gcs_path, language)
             
             # Check if all files in the job have been processed
             self._check_job_completion(db, job)
@@ -296,7 +298,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         
         return analysis
     
-    def process_video(self, db, job, gcs_path: str):
+    def process_video(self, db, job, gcs_path: str, language: str = None):
         """
         Process a single video file
         
@@ -304,7 +306,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         1. Download video from GCS
         2. Extract frames at 0.3 fps (1 frame every ~3 seconds)
         3. Analyze frames using vision LLM
-        4. Detect language and translate if Hindi
+        4. Detect language and translate if non-English
         5. Save analysis and translation to GCS
         6. Generate summary
         7. Create document record with PROCESSING status
@@ -313,7 +315,18 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         print(f"🔄 Processing video: {gcs_path}")
         
         filename = os.path.basename(gcs_path)
-        is_hindi = 'hindi' in filename.lower()
+        
+        # Determine if translation is needed
+        # If language is provided, use it; otherwise check filename for backward compatibility
+        if language:
+            needs_translation = language.lower() != 'en' and language.lower() != 'english'
+            source_language = language
+        else:
+            # Backward compatibility: check filename
+            is_hindi = 'hindi' in filename.lower()
+            needs_translation = is_hindi
+            source_language = 'hindi' if is_hindi else 'english'
+        
         artifact_start_time = datetime.now(timezone.utc)
         stage_times = {}
         
@@ -398,18 +411,18 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             # Determine naming convention based on translation
             # == (two equal signs) for analysis + summary
             # === (three equal signs) for analysis + summary + translation
-            equal_prefix = "===" if is_hindi else "=="
+            equal_prefix = "===" if needs_translation else "=="
             
             # Save analysis to GCS with naming convention
             analysis_path = gcs_path + f'{equal_prefix}analysis.txt'
             storage_manager.upload_text(analysis, analysis_path)
             print(f"✅ Analysis saved: {len(analysis)} characters")
             
-            # Step 3: Translation (if Hindi)
+            # Step 3: Translation (if non-English)
             translated_text_path = None
             final_text = analysis
             
-            if is_hindi and analysis != "[ No analysis available ]":
+            if needs_translation and analysis != "[ No analysis available ]":
                 translation_start = datetime.now(timezone.utc)
                 doc_record.current_stage = "translation"
                 doc_record.processing_stages = stage_times
@@ -423,7 +436,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                     file_type="video"
                 )
                 
-                print(f"🌐 Translating analysis from Hindi...")
+                print(f"🌐 Translating analysis from {source_language} to English...")
                 try:
                     from document_processor import translate
                     

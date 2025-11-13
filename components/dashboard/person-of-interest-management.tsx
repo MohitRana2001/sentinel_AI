@@ -244,9 +244,35 @@ function PersonOfInterestCard({ person, personIndex, onUpdate, onDelete }: Perso
   );
 }
 
-export function PersonOfInterestManagement() {
+interface PersonOfInterestManagementProps {
+  suspects?: any[];
+  onSuspectsChange?: (suspects: any[]) => void;
+}
+
+export function PersonOfInterestManagement({ suspects = [], onSuspectsChange }: PersonOfInterestManagementProps) {
   const [persons, setPersons] = useState<PersonOfInterest[]>([]);
   const [loading, setLoading] = useState(false);
+
+  // Sync with parent component if controlled
+  React.useEffect(() => {
+    if (suspects && suspects.length > 0) {
+      // Convert suspects to PersonOfInterest format if needed
+      const converted = suspects.map(s => ({
+        name: s.name || "",
+        phone_number: s.phone_number || "",
+        photograph_base64: s.photograph_base64 || "",
+        details: s.details || {}
+      }));
+      setPersons(converted);
+    }
+  }, [suspects]);
+
+  const updateParent = (updated: PersonOfInterest[]) => {
+    setPersons(updated);
+    if (onSuspectsChange) {
+      onSuspectsChange(updated);
+    }
+  };
 
   const addPerson = () => {
     const newPerson: PersonOfInterest = {
@@ -255,17 +281,17 @@ export function PersonOfInterestManagement() {
       photograph_base64: "",
       details: {}
     };
-    setPersons([...persons, newPerson]);
+    updateParent([...persons, newPerson]);
   };
 
   const updatePerson = (index: number, updatedPerson: PersonOfInterest) => {
     const updated = [...persons];
     updated[index] = updatedPerson;
-    setPersons(updated);
+    updateParent(updated);
   };
 
   const deletePerson = (index: number) => {
-    setPersons(persons.filter((_, i) => i !== index));
+    updateParent(persons.filter((_, i) => i !== index));
   };
 
   const exportData = () => {

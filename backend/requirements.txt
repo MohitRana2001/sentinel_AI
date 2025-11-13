@@ -62,3 +62,7 @@ fastapi
 sqlalchemy
 dotenv
 pydantic[email]
+
+opencv-python
+face-recognition
+numpy

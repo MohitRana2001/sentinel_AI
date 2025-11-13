@@ -170,29 +170,37 @@ class VideoProcessorService:
     
     def _check_job_completion(self, db, job):
         """
-        Check if all files in the job have been processed
-        If yes, mark job as completed
+        Check if all files in the job have completed GRAPH PROCESSING.
+        Documents must have status COMPLETED (set by graph processor), not just created.
+        This ensures we don't mark the job complete until graphs are built.
         """
-        # Count documents created for this job
-        documents_processed = db.query(models.Document).filter(
+        # Count COMPLETED documents (graph processing done)
+        completed_documents = db.query(models.Document).filter(
+            models.Document.job_id == job.id,
+            models.Document.status == models.JobStatus.COMPLETED  # Only fully completed docs
+        ).count()
+        
+        # Count total documents created
+        total_documents = db.query(models.Document).filter(
             models.Document.job_id == job.id
         ).count()
         
-        print(f"📊 Job {job.id}: {documents_processed}/{job.total_files} files processed")
+        print(f"📊 Job {job.id}: {completed_documents}/{job.total_files} files COMPLETED (with graphs), {total_documents} total documents")
         
-        # Only mark as completed if all files are done
-        if documents_processed >= job.total_files:
+        # Only mark job as completed if ALL files have completed graph processing
+        if completed_documents >= job.total_files:
             if job.status != models.JobStatus.COMPLETED:
                 job.status = models.JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
                 db.commit()
-                print(f"✅ Job {job.id} marked as COMPLETED")
-        elif documents_processed > 0:
-            # Some files processed, ensure status is PROCESSING
+                print(f"✅ Job {job.id} marked as COMPLETED (all files + graphs done)")
+        elif total_documents > 0:
+            # Some files processed but not all graphs built yet, ensure status is PROCESSING
             if job.status == models.JobStatus.QUEUED:
                 job.status = models.JobStatus.PROCESSING
                 job.started_at = job.started_at or datetime.now(timezone.utc)
                 db.commit()
+                print(f"🔄 Job {job.id} status set to PROCESSING ({total_documents} files processing, awaiting graph completion)")
     
     def format_timedelta(self, td):
         """
@@ -385,6 +393,52 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             frame_extraction_end = datetime.now(timezone.utc)
             stage_times['frame_extraction'] = (frame_extraction_end - frame_extraction_start).total_seconds()
             
+            # Step 1.5: Face Recognition (POI Detection)
+            face_recognition_start = datetime.now(timezone.utc)
+            doc_record.current_stage = "face_recognition"
+            doc_record.processing_stages = stage_times
+            db.commit()
+            redis_pubsub.publish_artifact_status(
+                job_id=job.id,
+                filename=filename,
+                status="processing",
+                current_stage="face_recognition",
+                processing_stages=stage_times,
+                file_type="video"
+            )
+            
+            print(f"🎯 Starting face recognition for POI detection...")
+            try:
+                from face_recognition_processor import face_recognition_processor
+                
+                # Load POI faces
+                poi_encodings, poi_metadata = face_recognition_processor.load_poi_faces(db)
+                
+                if poi_encodings:
+                    # Process video for face detections
+                    detections = face_recognition_processor.process_video_for_faces(
+                        temp_video_file,
+                        poi_encodings,
+                        poi_metadata
+                    )
+                    
+                    # Save detection records to database
+                    if detections:
+                        face_recognition_processor.create_video_poi_detections(db, doc_record.id, detections)
+                        print(f"✅ Face recognition completed: {len(detections)} POI detection(s)")
+                    else:
+                        print(f"ℹ️ No POI matches found in video")
+                else:
+                    print(f"ℹ️ No POIs in database, skipping face recognition")
+                    
+            except Exception as e:
+                print(f"⚠️ Face recognition failed (non-critical): {e}")
+                import traceback
+                traceback.print_exc()
+            
+            face_recognition_end = datetime.now(timezone.utc)
+            stage_times['face_recognition'] = (face_recognition_end - face_recognition_start).total_seconds()
+            
             # Step 2: Analyze frames using vision LLM
             analysis_start = datetime.now(timezone.utc)
             doc_record.current_stage = "video_analysis"
@@ -500,13 +554,15 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             if os.path.exists(temp_frames_dir):
                 shutil.rmtree(temp_frames_dir)
         
-        # Step 5: Update document record with paths
+        # Step 5: Update document record with paths and detected language
         doc_record.transcription_path = analysis_path  # Store analysis in transcription_path
         doc_record.translated_text_path = translated_text_path
         doc_record.summary_path = summary_path
         doc_record.summary_text = summary[:1000] if summary else ""
+        doc_record.detected_language = language if language else 'en'  # Store detected/selected language
         db.commit()
         db.refresh(doc_record)
+        print(f"✅ Document record updated with language: {doc_record.detected_language}")
         
         # Step 6: Vectorize the text
         vectorization_start = datetime.now(timezone.utc)

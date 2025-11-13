@@ -1,10 +1,42 @@
 from sqlalchemy import Column, String, Integer, DateTime, Text, JSON, ForeignKey, Enum as SQLEnum, Float, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy import TypeDecorator
 from datetime import datetime
 import enum
 from database import Base
 from pgvector.sqlalchemy import Vector
+import json as json_module
+
+# Database-agnostic JSON type (JSON for SQLite, JSONB for PostgreSQL)
+class JSONType(TypeDecorator):
+    """Platform-independent JSON type.
+    
+    Uses JSONB for PostgreSQL, JSON for SQLite and other databases.
+    """
+    impl = Text
+    cache_ok = True
+    
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            return dialect.type_descriptor(JSONB())
+        else:
+            return dialect.type_descriptor(JSON())
+    
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        if dialect.name != 'postgresql':
+            return json_module.dumps(value)
+        return value
+    
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        if dialect.name != 'postgresql':
+            if isinstance(value, str):
+                return json_module.loads(value)
+        return value
 
 
 class RBACLevel(str, enum.Enum):
@@ -128,6 +160,9 @@ class Document(Base):
     # Summary text (cached for quick access)
     summary_text = Column(Text)
     
+    # Detected language (ISO 639-1 code: 'en', 'hi', 'bn', etc.)
+    detected_language = Column(String(10))
+    
     # Per-artifact status and timing tracking
     status = Column(SQLEnum(JobStatus), default=JobStatus.QUEUED, nullable=False)
     processing_stages = Column(JSON, default=dict)  # {"extraction": 5.2, "summarization": 3.1, ...}
@@ -237,7 +272,8 @@ class PersonOfInterest(Base):
     
     # Stores arbitrary key-value pairs (e.g., "Names": [...], "Status": "Gangster", "Address": "...")
     # This is for additional optional fields beyond the mandatory ones
-    details = Column(JSONB, nullable=False, default=dict)
+    # Uses JSONType for database compatibility (JSONB for PostgreSQL, JSON for SQLite)
+    details = Column(JSONType, nullable=False, default=dict)
     
     # Vectors
     details_embedding = Column(Vector(EMBEDDING_GEMMA_DIM))
@@ -266,7 +302,7 @@ class PersonOfInterest(Base):
     )
 
 class CDRRecord(Base):
-    """CDR (Call Data Records) stored as JSONB"""
+    """CDR (Call Data Records) stored as JSON/JSONB"""
     __tablename__ = "cdr_records"
     
     id = Column(Integer, primary_key=True, index=True)
@@ -276,8 +312,9 @@ class CDRRecord(Base):
     original_filename = Column(String, nullable=False)
     file_path = Column(String, nullable=False)  # GCS path to original file
     
-    # CDR data in JSONB format (array of call records)
-    data = Column(JSONB, nullable=False)  # [{"caller": "...", "called": "...", "timestamp": "...", ...}, ...]
+    # CDR data in JSON/JSONB format (array of call records)
+    # Uses JSONType for database compatibility (JSONB for PostgreSQL, JSON for SQLite)
+    data = Column(JSONType, nullable=False)  # [{"caller": "...", "called": "...", "timestamp": "...", ...}, ...]
     
     # Metadata
     record_count = Column(Integer, default=0)
@@ -384,8 +421,9 @@ class CDRPOIMatch(Base):
     # Matched phone number
     phone_number = Column(String, nullable=False, index=True)
     
-    # The specific CDR record that matched (stored as JSONB)
-    cdr_record_data = Column(JSONB, nullable=False)
+    # The specific CDR record that matched (stored as JSON/JSONB)
+    # Uses JSONType for database compatibility (JSONB for PostgreSQL, JSON for SQLite)
+    cdr_record_data = Column(JSONType, nullable=False)
     
     # Which field in the CDR matched (e.g., "caller", "called", "calling_number")
     matched_field = Column(String, nullable=False)
@@ -400,5 +438,7 @@ class CDRPOIMatch(Base):
     __table_args__ = (
         Index("ix_cdr_poi_poi_id", "poi_id"),
         Index("ix_cdr_poi_job_id", "job_id"),
+        Index("ix_cdr_poi_phone_number", "phone_number"),
+    )
         Index("ix_cdr_poi_phone", "phone_number"),
     )

@@ -421,9 +421,10 @@ class DocumentProcessorService:
             document.translated_text_path = translated_text_path
             document.summary_path = summary_path
             document.summary_text = summary[:1000] if summary else ""
+            document.detected_language = detected_language  # Store detected language
             db.commit()
             db.refresh(document)
-            print(f"Document record saved with ID: {document.id}")
+            print(f"Document record saved with ID: {document.id}, language: {detected_language}")
 
             # Step 6: Create embeddings with chunking
             embedding_start = datetime.now(timezone.utc)

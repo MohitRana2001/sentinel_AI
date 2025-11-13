@@ -18,6 +18,7 @@ interface JobStatus {
   started_at: string | null
   completed_at: string | null
   error_message: string | null
+  case_name?: string | null
 }
 
 interface JobResults {

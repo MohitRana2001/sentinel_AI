@@ -103,13 +103,20 @@ class RedisPubSub:
         
         Translation stage is optional and doesn't count in progress calculation
         """
+        # Debug logging
+        print(f"🔍 Progress Calculation - status: {status}, current_stage: {current_stage}, file_type: {file_type}")
+        print(f"   processing_stages: {processing_stages}")
+        
         if status == "completed":
+            print(f"   ✅ Status is completed, returning 100%")
             return 100
         
         if status == "failed":
+            print(f"   ❌ Status is failed, returning 0%")
             return 0
         
         if not current_stage:
+            print(f"   ⚠️ No current_stage, returning 0%")
             return 0
         
         # Determine file type from processing stages if not provided

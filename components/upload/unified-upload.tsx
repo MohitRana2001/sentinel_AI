@@ -102,6 +102,17 @@ export function UnifiedUpload({ onUpload, suspects }: UnifiedUploadProps) {
       return;
     }
 
+    // Validate case name (MANDATORY)
+    const finalCaseName = isNewCase ? caseName : selectedCase;
+    if (!finalCaseName || finalCaseName.trim() === "") {
+      toast({
+        title: "Case name required",
+        description: "Please enter a case name or select an existing case",
+        variant: "destructive",
+      });
+      return;
+    }
+
     // Validate language selection for audio/video
     for (const fileWithMeta of files) {
       if (MEDIA_TYPE_CONFIG[fileWithMeta.mediaType].needsLanguage && !fileWithMeta.language) {
@@ -154,7 +165,9 @@ export function UnifiedUpload({ onUpload, suspects }: UnifiedUploadProps) {
         <div className="space-y-3 p-4 border rounded-lg bg-slate-50">
           <div className="flex items-center gap-2 mb-2">
             <Folder className="h-4 w-4 text-slate-600" />
-            <Label className="font-medium">Case Management (Optional)</Label>
+            <Label className="font-medium">
+              Case Management <span className="text-red-500">*</span>
+            </Label>
           </div>
           
           <div className="flex items-center gap-2">
@@ -181,7 +194,7 @@ export function UnifiedUpload({ onUpload, suspects }: UnifiedUploadProps) {
           {isNewCase ? (
             <div className="space-y-2">
               <Label htmlFor="case-name" className="text-sm text-slate-600">
-                Case Name
+                Case Name <span className="text-red-500">*</span>
               </Label>
               <Input
                 id="case-name"
@@ -190,6 +203,7 @@ export function UnifiedUpload({ onUpload, suspects }: UnifiedUploadProps) {
                 onChange={(e) => setCaseName(e.target.value)}
                 disabled={isUploading}
                 className="bg-white"
+                required
               />
               <p className="text-xs text-muted-foreground">
                 Group related documents together. You can add more documents to this case later.
@@ -198,7 +212,7 @@ export function UnifiedUpload({ onUpload, suspects }: UnifiedUploadProps) {
           ) : (
             <div className="space-y-2">
               <Label htmlFor="existing-case" className="text-sm text-slate-600">
-                Select Case
+                Select Case <span className="text-red-500">*</span>
               </Label>
               <Select
                 value={selectedCase}

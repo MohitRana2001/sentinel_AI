@@ -963,17 +963,25 @@ async def get_job_status(
     if not user_has_job_access(current_user, job):
         raise HTTPException(status_code=403, detail="Insufficient permissions for this job")
     
-    progress_percentage = 0.0
-    if job.total_files > 0:
-        progress_percentage = (job.processed_files / job.total_files) * 100
-    
     # Get per-artifact status
     documents = db.query(models.Document).filter(
         models.Document.job_id == job_id
     ).all()
     
     artifacts = []
+    total_artifact_progress = 0.0
+    
     for doc in documents:
+        # Calculate progress for this artifact using the same logic as Redis pub/sub
+        artifact_progress = redis_pubsub._calculate_progress(
+            current_stage=doc.current_stage,
+            processing_stages=doc.processing_stages,
+            file_type=doc.file_type.value if doc.file_type else None,
+            status=doc.status.value if doc.status else "queued"
+        )
+        
+        total_artifact_progress += artifact_progress
+        
         artifacts.append({
             "id": doc.id,
             "filename": doc.original_filename,
@@ -981,10 +989,19 @@ async def get_job_status(
             "status": doc.status.value if doc.status else "queued",
             "current_stage": doc.current_stage,
             "processing_stages": doc.processing_stages or {},
+            "progress": artifact_progress,  # Per-artifact progress
             "started_at": doc.started_at.isoformat() if doc.started_at else None,
             "completed_at": doc.completed_at.isoformat() if doc.completed_at else None,
             "error_message": doc.error_message
         })
+    
+    # Calculate overall job progress as average of all artifacts
+    progress_percentage = 0.0
+    if len(documents) > 0:
+        progress_percentage = total_artifact_progress / len(documents)
+    elif job.total_files > 0:
+        # Fallback to old calculation if no documents yet
+        progress_percentage = (job.processed_files / job.total_files) * 100
     
     return {
         "job_id": job.id,

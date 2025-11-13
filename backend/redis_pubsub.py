@@ -94,12 +94,14 @@ class RedisPubSub:
                            file_type: Optional[str],
                            status: str) -> int:
         """
-        Calculate progress percentage based on completed stages
+        Calculate progress percentage based on current stage position in the pipeline
         
-        Stage order by file type:
-        - document: extraction, translation, summarization, embeddings, graph_building
-        - audio: transcription, translation, summarization, vectorization, graph_building
-        - video: frame_extraction, video_analysis, translation, summarization, vectorization, graph_building
+        Stage order by file type (translation is optional):
+        - document: extraction → summarization → embeddings → graph_building → completed
+        - audio: transcription → summarization → vectorization → graph_building → completed
+        - video: frame_extraction → video_analysis → summarization → vectorization → graph_building → completed
+        
+        Translation stage is optional and doesn't count in progress calculation
         """
         if status == "completed":
             return 100
@@ -109,13 +111,6 @@ class RedisPubSub:
         
         if not current_stage:
             return 0
-        
-        # Define stage orders for each file type
-        stage_orders = {
-            "document": ["starting", "extraction", "translation", "summarization", "embeddings", "awaiting_graph", "graph_building", "completed"],
-            "audio": ["starting", "transcription", "translation", "summarization", "vectorization", "awaiting_graph", "graph_building", "completed"],
-            "video": ["starting", "frame_extraction", "video_analysis", "translation", "summarization", "vectorization", "awaiting_graph", "graph_building", "completed"]
-        }
         
         # Determine file type from processing stages if not provided
         if not file_type:
@@ -131,24 +126,73 @@ class RedisPubSub:
             if not file_type:
                 file_type = "document"
         
-        stages = stage_orders.get(file_type, stage_orders["document"])
+        # Define core stages (excluding optional translation) with their progress weights
+        # Each stage represents equal progress (100 / number_of_core_stages)
+        # Core stages for document/audio: extraction/transcription, summarization, embeddings/vectorization, awaiting_graph, graph_building, completed = 6 stages
+        # Core stages for video: frame_extraction, video_analysis, summarization, vectorization, awaiting_graph, graph_building, completed = 7 stages
+        stage_progress = {
+            "document": {
+                "starting": 0,
+                "extraction": 16,        # 1/6 ≈ 16.67%
+                "translation": 33,       # Optional, same as summarization
+                "summarization": 33,     # 2/6 ≈ 33.33%
+                "embeddings": 50,        # 3/6 = 50%
+                "awaiting_graph": 66,    # 4/6 ≈ 66.67%
+                "graph_building": 83,    # 5/6 ≈ 83.33%
+                "completed": 100         # 6/6 = 100%
+            },
+            "audio": {
+                "starting": 0,
+                "transcription": 16,     # 1/6 ≈ 16.67%
+                "translation": 33,       # Optional, same as summarization
+                "summarization": 33,     # 2/6 ≈ 33.33%
+                "vectorization": 50,     # 3/6 = 50%
+                "awaiting_graph": 66,    # 4/6 ≈ 66.67%
+                "graph_building": 83,    # 5/6 ≈ 83.33%
+                "completed": 100         # 6/6 = 100%
+            },
+            "video": {
+                "starting": 0,
+                "frame_extraction": 14,  # 1/7 ≈ 14.29%
+                "video_analysis": 28,    # 2/7 ≈ 28.57%
+                "translation": 42,       # Optional, same as summarization
+                "summarization": 42,     # 3/7 ≈ 42.86%
+                "vectorization": 57,     # 4/7 ≈ 57.14%
+                "awaiting_graph": 71,    # 5/7 ≈ 71.43%
+                "graph_building": 85,    # 6/7 ≈ 85.71%
+                "completed": 100         # 7/7 = 100%
+            }
+        }
         
-        # Count completed stages (stages that have timing in processing_stages)
-        completed_count = 0
-        if processing_stages:
-            completed_count = len(processing_stages)
+        # Get progress map for file type
+        progress_map = stage_progress.get(file_type, stage_progress["document"])
         
-        # Add 1 for current stage if not yet in completed stages
-        if current_stage and current_stage not in (processing_stages or {}):
-            completed_count += 1
+        # Get progress for current stage
+        progress = progress_map.get(current_stage, 0)
         
-        # Calculate percentage
-        total_stages = len(stages) - 1  # Exclude "starting"
-        if total_stages == 0:
-            return 0
+        # If stage not found in map, try to estimate based on completed stages count
+        if progress == 0 and current_stage != "starting":
+            # Count unique completed stages (excluding translation which is optional)
+            completed_count = 0
+            if processing_stages:
+                for stage in processing_stages.keys():
+                    if stage != "translation":  # Don't count optional translation
+                        completed_count += 1
+            
+            # Add current stage if not in completed
+            if current_stage not in (processing_stages or {}):
+                completed_count += 1
+            
+            # Estimate progress: each core stage is roughly equal
+            if file_type == "video":
+                total_core_stages = 7  # video has more stages
+            else:
+                total_core_stages = 6  # document and audio
+            
+            progress = int((completed_count / total_core_stages) * 100)
         
-        progress = int((completed_count / total_stages) * 100)
-        return min(progress, 99)  # Cap at 99% until truly completed
+        # Cap at 99% until truly completed
+        return min(int(progress), 99) if status != "completed" else 100
     
     def publish_job_status(self, job_id: str, status: str, 
                            current_stage: Optional[str] = None,

@@ -133,10 +133,17 @@ export interface SuspectField {
 }
 
 export interface Suspect {
-  id: string
-  fields: SuspectField[]
-  createdAt: string
-  updatedAt: string
+  id?: number
+  name: string
+  phone_number: string
+  photograph_base64: string
+  details: Record<string, any>
+  created_at?: string
+  updated_at?: string
+  // Legacy fields for backward compatibility
+  fields?: SuspectField[]
+  createdAt?: string
+  updatedAt?: string
 }
 
 export interface SuspectDatabase {

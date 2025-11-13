@@ -334,7 +334,7 @@ export function UnifiedUpload({ onUpload, suspects }: UnifiedUploadProps) {
               {suspects.length} Suspect(s) will be included in this job
             </p>
             <p className="text-xs text-muted-foreground">
-              {suspects.map(s => s.fields.find(f => f.key.toLowerCase() === 'name')?.value || 'Unnamed').join(', ')}
+              {suspects.map(s => s.name || 'Unnamed').join(', ')}
             </p>
           </div>
         )}
@@ -354,7 +354,7 @@ export function UnifiedUpload({ onUpload, suspects }: UnifiedUploadProps) {
           ) : (
             <>
               <Upload className="mr-2 h-4 w-4" />
-              Upload {files.length} File(s) {suspects.length > 0 && `+ ${suspects.length} Suspect(s)`}
+              Upload {files.length} File(s) {suspects.length > 0 && `+ ${suspects.length} POI`}
             </>
           )}
         </Button>

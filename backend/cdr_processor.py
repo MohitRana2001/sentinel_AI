@@ -84,16 +84,27 @@ class CDRProcessor:
         Returns:
             List of dictionaries representing call records
         """
-        # Download file content
-        file_content = storage_manager.download_file(gcs_path)
+        # Determine file type and download to temp
+        suffix = '.csv' if gcs_path.lower().endswith('.csv') else '.xlsx'
+        temp_file_path = storage_manager.download_to_temp(gcs_path, suffix=suffix)
         
-        # Determine file type and process accordingly
-        if gcs_path.lower().endswith('.csv'):
-            return CDRProcessor.process_csv(file_content)
-        elif gcs_path.lower().endswith(('.xlsx', '.xls')):
-            return CDRProcessor.process_xlsx(file_content)
-        else:
-            raise ValueError(f"Unsupported CDR file format: {gcs_path}")
+        try:
+            # Read file content as bytes
+            with open(temp_file_path, 'rb') as f:
+                file_content = f.read()
+            
+            # Process based on file type
+            if gcs_path.lower().endswith('.csv'):
+                return CDRProcessor.process_csv(file_content)
+            elif gcs_path.lower().endswith(('.xlsx', '.xls')):
+                return CDRProcessor.process_xlsx(file_content)
+            else:
+                raise ValueError(f"Unsupported CDR file format: {gcs_path}")
+        finally:
+            # Clean up temp file
+            import os
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
     
     @staticmethod
     def validate_cdr_data(records: List[Dict[str, Any]]) -> bool:

@@ -31,16 +31,64 @@ function PersonOfInterestCard({ person, personIndex, onUpdate, onDelete }: Perso
   );
   const [isEditing, setIsEditing] = useState(false);
 
-  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const compressImage = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          // Create canvas for compression
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          
+          if (!ctx) {
+            reject(new Error('Failed to get canvas context'));
+            return;
+          }
+
+          // Calculate new dimensions (max 800x800, maintain aspect ratio)
+          let width = img.width;
+          let height = img.height;
+          const maxDimension = 800;
+
+          if (width > height && width > maxDimension) {
+            height = (height * maxDimension) / width;
+            width = maxDimension;
+          } else if (height > maxDimension) {
+            width = (width * maxDimension) / height;
+            height = maxDimension;
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+
+          // Draw and compress
+          ctx.drawImage(img, 0, 0, width, height);
+          
+          // Convert to base64 with quality compression (0.7 = 70% quality)
+          const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
+          resolve(compressedBase64);
+        };
+        img.onerror = () => reject(new Error('Failed to load image'));
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64 = reader.result as string;
-        setEditedPerson({ ...editedPerson, photograph_base64: base64 });
+      try {
+        // Compress the image before saving
+        const compressedBase64 = await compressImage(file);
+        setEditedPerson({ ...editedPerson, photograph_base64: compressedBase64 });
         setIsEditing(true);
-      };
-      reader.readAsDataURL(file);
+      } catch (error) {
+        console.error('Error compressing image:', error);
+        alert('Failed to process image. Please try a different image.');
+      }
     }
   };
 
@@ -121,6 +169,9 @@ function PersonOfInterestCard({ person, personIndex, onUpdate, onDelete }: Perso
           {/* Photo Upload */}
           <div>
             <Label htmlFor={`photo-${personIndex}`}>Photograph *</Label>
+            <p className="text-xs text-muted-foreground mb-1">
+              Images will be automatically compressed to reduce size
+            </p>
             <div className="flex items-center gap-2 mt-1">
               {editedPerson.photograph_base64 && (
                 <img 

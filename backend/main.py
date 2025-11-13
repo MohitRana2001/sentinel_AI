@@ -625,7 +625,8 @@ async def analyst_get_jobs(
             "total_files": job.total_files,
             "processed_files": job.processed_files,
             "created_at": job.created_at.isoformat(),
-            "progress_percentage": (job.processed_files / job.total_files * 100) if job.total_files > 0 else 0
+            "progress_percentage": (job.processed_files / job.total_files * 100) if job.total_files > 0 else 0,
+            "case_name": job.case_name  # Include case_name for filtering
         }
         for job in jobs
         if not is_cdr_only_job(job)

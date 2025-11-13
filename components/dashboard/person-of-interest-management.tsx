@@ -364,15 +364,69 @@ export function PersonOfInterestManagement({ suspects = [], onSuspectsChange }: 
     reader.onload = (e) => {
       try {
         const data = JSON.parse(e.target?.result as string);
+        
+        // Support multiple file formats
+        let importedPersons: PersonOfInterest[] = [];
+        
         if (data.persons && Array.isArray(data.persons)) {
-          setPersons(data.persons);
+          importedPersons = data.persons;
+        } else if (data.suspects && Array.isArray(data.suspects)) {
+          importedPersons = data.suspects;
+        } else if (Array.isArray(data)) {
+          importedPersons = data;
+        } else {
+          throw new Error('Invalid file format. Expected JSON with "persons" or "suspects" array.');
         }
+        
+        // Validate required fields
+        const validated = importedPersons.filter((p, idx) => {
+          if (!p.name || !p.phone_number || !p.photograph_base64) {
+            console.warn(`Skipping invalid POI at index ${idx}:`, {
+              hasName: !!p.name,
+              hasPhone: !!p.phone_number,
+              hasPhoto: !!p.photograph_base64
+            });
+            return false;
+          }
+          return true;
+        });
+        
+        if (validated.length === 0) {
+          throw new Error('No valid persons found. Each person must have name, phone_number, and photograph_base64.');
+        }
+        
+        // Ask user: replace or merge?
+        const shouldReplace = window.confirm(
+          `Found ${validated.length} valid person(s) in file.\n\n` +
+          `Click OK to REPLACE existing persons.\n` +
+          `Click Cancel to MERGE with existing persons.`
+        );
+        
+        if (shouldReplace) {
+          updateParent(validated);
+          alert(`✅ Replaced with ${validated.length} person(s)`);
+        } else {
+          updateParent([...persons, ...validated]);
+          alert(`✅ Added ${validated.length} person(s) to existing ${persons.length}`);
+        }
+        
+        const skipped = importedPersons.length - validated.length;
+        if (skipped > 0) {
+          console.warn(`Skipped ${skipped} invalid entries`);
+        }
+        
       } catch (error) {
         console.error('Failed to import:', error);
-        alert('Failed to import file. Please ensure it\'s a valid JSON file.');
+        alert(`Failed to import file:\n${error instanceof Error ? error.message : 'Unknown error'}\n\nPlease ensure it's a valid JSON file with required fields.`);
       }
     };
+    reader.onerror = () => {
+      alert('Failed to read file. Please try again.');
+    };
     reader.readAsText(file);
+    
+    // Reset input to allow re-importing same file
+    event.target.value = '';
   };
 
   return (

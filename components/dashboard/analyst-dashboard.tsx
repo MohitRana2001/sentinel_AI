@@ -62,8 +62,27 @@ export function AnalystDashboard() {
 
   // Filter jobs by selected case
   const filteredJobs = selectedCase && selectedCase !== "all" 
-    ? pastJobs.filter(job => job.case_name === selectedCase)
+    ? pastJobs.filter(job => {
+        // Handle both case_name and caseName for backend compatibility
+        const jobCaseName = job.case_name || (job as any).caseName || '';
+        const matches = jobCaseName === selectedCase;
+        
+        // Debug logging (remove in production)
+        if (!matches && jobCaseName) {
+          console.log(`Job ${job.job_id}: case="${jobCaseName}" != selected="${selectedCase}"`);
+        }
+        
+        return matches;
+      })
     : pastJobs;
+  
+  // Debug: Log filtering results
+  console.log('Case Filter Debug:', {
+    selectedCase,
+    totalJobs: pastJobs.length,
+    filteredJobs: filteredJobs.length,
+    casesInJobs: [...new Set(pastJobs.map(j => j.case_name).filter(Boolean))]
+  });
 
   const handleUpload = async (files: FileWithMetadata[], jobSuspects: Suspect[], caseName?: string, parentJobId?: string) => {
     await uploadJob({ files, suspects: jobSuspects }, caseName, parentJobId);

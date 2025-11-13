@@ -12,9 +12,42 @@ class CDRProcessor:
     """Process CDR files (CSV/XLSX) and convert to JSONB format"""
     
     @staticmethod
+    def detect_header_row(file_content: bytes) -> int:
+        """
+        Detect the actual header row in a CSV file that may have metadata at the top.
+        
+        Args:
+            file_content: Bytes content of CSV file
+            
+        Returns:
+            Row index where the actual data header is located (0-indexed)
+        """
+        lines = file_content.decode('utf-8', errors='ignore').split('\n')
+        
+        # Look for the first row that has multiple comma-separated values
+        # and appears to be a consistent header
+        max_columns = 0
+        header_row = 0
+        
+        for idx, line in enumerate(lines[:20]):  # Check first 20 lines
+            if not line.strip():
+                continue
+            
+            # Count commas (potential columns)
+            column_count = line.count(',')
+            
+            # If this row has more columns than previous, it might be the header
+            if column_count > max_columns and column_count > 3:  # Assume CDR has at least 4 columns
+                max_columns = column_count
+                header_row = idx
+        
+        return header_row
+    
+    @staticmethod
     def process_csv(file_content: bytes) -> List[Dict[str, Any]]:
         """
-        Process CSV file and convert to list of dictionaries
+        Process CSV file and convert to list of dictionaries.
+        Handles various CSV formats including those with metadata headers.
         
         Args:
             file_content: Bytes content of CSV file
@@ -23,8 +56,49 @@ class CDRProcessor:
             List of dictionaries representing call records
         """
         try:
-            # Read CSV into pandas DataFrame
-            df = pd.read_csv(io.BytesIO(file_content))
+            # Try standard CSV parsing first
+            try:
+                df = pd.read_csv(io.BytesIO(file_content))
+                
+                # Check if we got valid data
+                if df.empty or df.shape[1] <= 1:
+                    raise pd.errors.ParserError("Insufficient columns detected")
+                    
+            except (pd.errors.ParserError, pd.errors.EmptyDataError):
+                # If standard parsing fails, detect the actual header row
+                header_row = CDRProcessor.detect_header_row(file_content)
+                df = pd.read_csv(
+                    io.BytesIO(file_content),
+                    skiprows=header_row,
+                    on_bad_lines='skip',  # Skip malformed lines
+                    encoding='utf-8',
+                    encoding_errors='ignore'
+                )
+            
+            # If DataFrame is empty or has no valid data, try alternative approaches
+            if df.empty or df.shape[1] <= 1:
+                # Try comma-separated with explicit delimiter
+                try:
+                    df = pd.read_csv(
+                        io.BytesIO(file_content),
+                        sep=',',
+                        skipinitialspace=True,
+                        on_bad_lines='skip'
+                    )
+                except:
+                    # Try tab-separated
+                    df = pd.read_csv(
+                        io.BytesIO(file_content),
+                        sep='\t',
+                        on_bad_lines='skip'
+                    )
+            
+            # Remove completely empty rows
+            df = df.dropna(how='all')
+            
+            # If still empty, raise error
+            if df.empty:
+                raise ValueError("CSV file contains no valid data rows")
             
             # Convert DataFrame to list of dictionaries
             records = df.to_dict(orient='records')

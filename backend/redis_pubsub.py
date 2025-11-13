@@ -100,6 +100,7 @@ class RedisPubSub:
         - document: extraction → summarization → embeddings → graph_building → completed
         - audio: transcription → summarization → vectorization → graph_building → completed
         - video: frame_extraction → video_analysis → summarization → vectorization → graph_building → completed
+        - cdr: parsing → phone_matching → completed
         
         Translation stage is optional and doesn't count in progress calculation
         """
@@ -137,6 +138,7 @@ class RedisPubSub:
         # Each stage represents equal progress (100 / number_of_core_stages)
         # Core stages for document/audio: extraction/transcription, summarization, embeddings/vectorization, awaiting_graph, graph_building, completed = 6 stages
         # Core stages for video: frame_extraction, video_analysis, summarization, vectorization, awaiting_graph, graph_building, completed = 7 stages
+        # Core stages for CDR: parsing, phone_matching, completed = 3 stages
         stage_progress = {
             "document": {
                 "starting": 0,
@@ -168,6 +170,12 @@ class RedisPubSub:
                 "awaiting_graph": 71,    # 5/7 ≈ 71.43%
                 "graph_building": 85,    # 6/7 ≈ 85.71%
                 "completed": 100         # 7/7 = 100%
+            },
+            "cdr": {
+                "starting": 0,
+                "parsing": 33,           # 1/3 ≈ 33.33%
+                "phone_matching": 66,    # 2/3 ≈ 66.67%
+                "completed": 100         # 3/3 = 100%
             }
         }
         
@@ -193,6 +201,8 @@ class RedisPubSub:
             # Estimate progress: each core stage is roughly equal
             if file_type == "video":
                 total_core_stages = 7  # video has more stages
+            elif file_type == "cdr":
+                total_core_stages = 3  # CDR has fewer stages
             else:
                 total_core_stages = 6  # document and audio
             
@@ -284,6 +294,10 @@ class RedisPubSub:
                 print(f"Error in queue listener: {e}")
                 import time
                 time.sleep(1)  # Avoid tight loop on errors
+    
+    def subscribe_to_queue(self, queue_name: str, callback: Callable[[Dict[str, Any]], None]):
+        """Alias for listen_queue for consistency"""
+        self.listen_queue(queue_name, callback)
     
     def unsubscribe(self, channel: str):
         self.pubsub.unsubscribe(channel)

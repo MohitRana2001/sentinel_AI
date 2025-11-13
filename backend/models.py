@@ -89,6 +89,7 @@ class ProcessingJob(Base):
     
     user = relationship("User", back_populates="jobs", foreign_keys=[user_id])
     documents = relationship("Document", back_populates="job")
+    suspects = relationship("Suspect", back_populates="job", cascade="all, delete-orphan")
     
     # Self-referential for case extensions
     child_jobs = relationship("ProcessingJob", backref="parent_job", remote_side=[id], foreign_keys=[parent_job_id])
@@ -229,12 +230,14 @@ class PersonOfInterest(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     
+    # MANDATORY FIELDS
     name = Column(String, index=True, nullable=False)
+    phone_number = Column(String, nullable=False, index=True)  # MANDATORY: Phone number
+    photograph_base64 = Column(Text, nullable=False)  # MANDATORY: Photo
     
-    # Stores arbitrary key-value pairs (e.g., "Names": [...], "Status": "Gangster")
-    details = Column(JSONB, nullable=False)
-    
-    photograph_base64 = Column(Text, nullable=True)
+    # Stores arbitrary key-value pairs (e.g., "Names": [...], "Status": "Gangster", "Address": "...")
+    # This is for additional optional fields beyond the mandatory ones
+    details = Column(JSONB, nullable=False, default=dict)
     
     # Vectors
     details_embedding = Column(Vector(EMBEDDING_GEMMA_DIM))
@@ -242,6 +245,10 @@ class PersonOfInterest(Base):
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    video_detections = relationship("VideoPOIDetection", back_populates="person_of_interest", cascade="all, delete-orphan")
+    cdr_matches = relationship("CDRPOIMatch", back_populates="person_of_interest", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index(
@@ -274,6 +281,16 @@ class CDRRecord(Base):
     
     # Metadata
     record_count = Column(Integer, default=0)
+    
+    # Per-artifact status and timing tracking
+    status = Column(SQLEnum(JobStatus), default=JobStatus.QUEUED, nullable=False)
+    processing_stages = Column(JSON, default=dict)  # {"parsing": 5.2, "phone_matching": 3.1, ...}
+    current_stage = Column(String)  # Current processing stage for this artifact
+    error_message = Column(Text)  # Error message specific to this artifact
+    
+    started_at = Column(DateTime)  # When processing started for this artifact
+    completed_at = Column(DateTime)  # When processing completed for this artifact
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -288,3 +305,100 @@ class CDRRecord(Base):
 EMBEDDING_GEMMA_DIM = 768 
 
 PHOTO_VECTOR_DIM = 1024
+
+class Suspect(Base):
+    """Suspect model - stores suspects associated with processing jobs"""
+    __tablename__ = "suspects"
+    
+    id = Column(String, primary_key=True, index=True)  # UUID
+    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=False, index=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    job = relationship("ProcessingJob", back_populates="suspects")
+    fields = relationship("SuspectField", back_populates="suspect", cascade="all, delete-orphan")
+
+
+class SuspectField(Base):
+    """Suspect field model - stores key-value pairs for suspect information"""
+    __tablename__ = "suspect_fields"
+    
+    id = Column(String, primary_key=True, index=True)  # UUID
+    suspect_id = Column(String, ForeignKey("suspects.id"), nullable=False, index=True)
+    
+    key = Column(String, nullable=False)  # e.g., "name", "age", "phone", "address"
+    value = Column(String, nullable=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    suspect = relationship("Suspect", back_populates="fields")
+
+
+# --- JOINT TABLES FOR POI LINKING ---
+
+class VideoPOIDetection(Base):
+    """Joint table linking videos to Person of Interest with frame information"""
+    __tablename__ = "video_poi_detections"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Foreign keys
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)  # Video document
+    poi_id = Column(Integer, ForeignKey("person_of_interest.id"), nullable=False, index=True)
+    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=False, index=True)
+    
+    # Frame information (comma-separated list of frame numbers where POI was detected)
+    frames = Column(String, nullable=False)  # e.g., "15,42,89,127"
+    
+    # Detection metadata
+    confidence_scores = Column(JSON)  # Optional: store confidence scores per frame
+    detection_metadata = Column(JSON)  # Optional: additional detection information
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    video_document = relationship("Document", backref="poi_detections")
+    person_of_interest = relationship("PersonOfInterest", back_populates="video_detections")
+    job = relationship("ProcessingJob", backref="video_poi_detections")
+    
+    __table_args__ = (
+        Index("ix_video_poi_document_id", "document_id"),
+        Index("ix_video_poi_poi_id", "poi_id"),
+        Index("ix_video_poi_job_id", "job_id"),
+    )
+
+
+class CDRPOIMatch(Base):
+    """Joint table linking CDR records to Person of Interest based on phone number matches"""
+    __tablename__ = "cdr_poi_matches"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Foreign keys
+    poi_id = Column(Integer, ForeignKey("person_of_interest.id"), nullable=False, index=True)
+    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=False, index=True)
+    
+    # Matched phone number
+    phone_number = Column(String, nullable=False, index=True)
+    
+    # The specific CDR record that matched (stored as JSONB)
+    cdr_record_data = Column(JSONB, nullable=False)
+    
+    # Which field in the CDR matched (e.g., "caller", "called", "calling_number")
+    matched_field = Column(String, nullable=False)
+    
+    # Match metadata
+    match_timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    person_of_interest = relationship("PersonOfInterest", back_populates="cdr_matches")
+    job = relationship("ProcessingJob", backref="cdr_poi_matches")
+    
+    __table_args__ = (
+        Index("ix_cdr_poi_poi_id", "poi_id"),
+        Index("ix_cdr_poi_job_id", "job_id"),
+        Index("ix_cdr_poi_phone", "phone_number"),
+    )

@@ -114,12 +114,22 @@ class JobWithAnalyst(BaseModel):
     progress_percentage: float
 
 class PersonOfInterestCreate(BaseModel):
-    name: str
-    details: Dict[str, Any]
+    """Schema for creating a new Person of Interest"""
+    name: str  # MANDATORY
+    phone_number: str  # MANDATORY
+    photograph_base64: str  # MANDATORY - Base64 encoded photo
+    details: Dict[str, Any] = {}  # OPTIONAL - Additional details
 
 class PersonOfInterestUpdate(BaseModel):
+    """Schema for updating a Person of Interest"""
     name: Optional[str] = None
+    phone_number: Optional[str] = None
+    photograph_base64: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
+
+class PersonOfInterestImport(BaseModel):
+    """Schema for importing multiple Person of Interest records"""
+    persons: List[PersonOfInterestCreate]
 # --- END: PYDANTIC MODELS ---
 
 
@@ -610,14 +620,26 @@ async def analyst_get_jobs(
 async def create_person_of_interest(
     poi_in: PersonOfInterestCreate,
     db: Session = Depends(get_db),
-    #current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user)
 ):
-    """Creates a new Person of Interest with embeddings."""
+    """Creates a new Person of Interest with mandatory fields: name, phone_number, and photograph."""
     
     print(f"Creating PoI: {poi_in.name}")
     
-    # 1. Generate Text Embedding for the JSON details
-    details_str = json.dumps(poi_in.details)
+    # Validate mandatory fields
+    if not poi_in.name or not poi_in.name.strip():
+        raise HTTPException(status_code=400, detail="Name is required")
+    
+    if not poi_in.phone_number or not poi_in.phone_number.strip():
+        raise HTTPException(status_code=400, detail="Phone number is required")
+    
+    if not poi_in.photograph_base64 or not poi_in.photograph_base64.strip():
+        raise HTTPException(status_code=400, detail="Photograph is required")
+    
+    # Generate Text Embedding for the details (including phone in details for searching)
+    details_with_phone = poi_in.details.copy()
+    details_with_phone['phone'] = poi_in.phone_number
+    details_str = json.dumps(details_with_phone)
     
     try:
         embed_model = get_poi_embedding_model()
@@ -627,13 +649,18 @@ async def create_person_of_interest(
         print(f"Error generating text embedding: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate text embedding: {str(e)}")
 
-    # 2. Save to Database
+    # TODO: Generate photo embedding when face recognition is implemented
+    # For now, set to None or a placeholder
+    photograph_embedding = None
+    
+    # Save to Database
     new_poi = models.PersonOfInterest(
         name=poi_in.name,
-        details=poi_in.details,
+        phone_number=poi_in.phone_number,
         photograph_base64=poi_in.photograph_base64,
+        details=poi_in.details,
         details_embedding=details_embedding,
-        photograph_embedding=photo_embedding
+        photograph_embedding=photograph_embedding
     )
     
     db.add(new_poi)
@@ -643,11 +670,123 @@ async def create_person_of_interest(
     return {"id": new_poi.id, "name": new_poi.name, "message": "Person of Interest created successfully"}
 
 
+@app.post(f"{settings.API_PREFIX}/person-of-interest/import")
+async def import_persons_of_interest(
+    import_data: PersonOfInterestImport,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Import multiple Person of Interest records at once"""
+    
+    created_pois = []
+    errors = []
+    
+    for idx, poi_in in enumerate(import_data.persons):
+        try:
+            # Validate mandatory fields
+            if not poi_in.name or not poi_in.name.strip():
+                errors.append(f"Record {idx + 1}: Name is required")
+                continue
+            
+            if not poi_in.phone_number or not poi_in.phone_number.strip():
+                errors.append(f"Record {idx + 1}: Phone number is required")
+                continue
+            
+            if not poi_in.photograph_base64 or not poi_in.photograph_base64.strip():
+                errors.append(f"Record {idx + 1}: Photograph is required")
+                continue
+            
+            # Generate embedding
+            details_with_phone = poi_in.details.copy()
+            details_with_phone['phone'] = poi_in.phone_number
+            details_str = json.dumps(details_with_phone)
+            
+            embed_model = get_poi_embedding_model()
+            details_embedding = embed_model.embed_query(details_str)
+            
+            # Create POI
+            new_poi = models.PersonOfInterest(
+                name=poi_in.name,
+                phone_number=poi_in.phone_number,
+                photograph_base64=poi_in.photograph_base64,
+                details=poi_in.details,
+                details_embedding=details_embedding,
+                photograph_embedding=None  # TODO: implement face recognition
+            )
+            
+            db.add(new_poi)
+            created_pois.append(new_poi.name)
+            
+        except Exception as e:
+            errors.append(f"Record {idx + 1} ({poi_in.name}): {str(e)}")
+    
+    db.commit()
+    
+    return {
+        "success": len(created_pois),
+        "created": created_pois,
+        "errors": errors,
+        "message": f"Successfully imported {len(created_pois)} out of {len(import_data.persons)} records"
+    }
+
+
+@app.get(f"{settings.API_PREFIX}/person-of-interest")
+async def get_persons_of_interest(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get all Person of Interest records"""
+    
+    pois = db.query(models.PersonOfInterest).offset(skip).limit(limit).all()
+    
+    return {
+        "total": db.query(models.PersonOfInterest).count(),
+        "persons": [
+            {
+                "id": poi.id,
+                "name": poi.name,
+                "phone_number": poi.phone_number,
+                "photograph_base64": poi.photograph_base64,
+                "details": poi.details,
+                "created_at": poi.created_at.isoformat(),
+                "updated_at": poi.updated_at.isoformat()
+            }
+            for poi in pois
+        ]
+    }
+
+
+@app.get(f"{settings.API_PREFIX}/person-of-interest/{{poi_id}}")
+async def get_person_of_interest(
+    poi_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get a specific Person of Interest by ID"""
+    
+    poi = db.query(models.PersonOfInterest).filter(models.PersonOfInterest.id == poi_id).first()
+    if not poi:
+        raise HTTPException(status_code=404, detail="Person of Interest not found")
+    
+    return {
+        "id": poi.id,
+        "name": poi.name,
+        "phone_number": poi.phone_number,
+        "photograph_base64": poi.photograph_base64,
+        "details": poi.details,
+        "created_at": poi.created_at.isoformat(),
+        "updated_at": poi.updated_at.isoformat()
+    }
+
+
 @app.put(f"{settings.API_PREFIX}/person-of-interest/{{poi_id}}")
 async def update_person_of_interest(
     poi_id: int,
     poi_update: PersonOfInterestUpdate,
     db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
     """
     Updates a Person of Interest. 
@@ -661,22 +800,29 @@ async def update_person_of_interest(
         raise HTTPException(status_code=404, detail="Person of Interest not found")
 
     # Update basic fields if provided
-    if poi_update.name:
+    if poi_update.name is not None:
         poi.name = poi_update.name
+    
+    if poi_update.phone_number is not None:
+        poi.phone_number = poi_update.phone_number
+    
+    if poi_update.photograph_base64 is not None:
+        poi.photograph_base64 = poi_update.photograph_base64
         
-    if poi_update.details:
+    if poi_update.details is not None:
         print(f"Details changed for {poi.name}. Overwriting data and re-calculating vector...")
         
         poi.details = poi_update.details
         
-        details_str = ". ".join([f"{k}: {v}" for k, v in poi_update.details.items()])
+        # Recalculate embedding with phone number included
+        details_with_phone = poi_update.details.copy()
+        details_with_phone['phone'] = poi.phone_number
+        details_str = json.dumps(details_with_phone)
         
         try:
             embed_model = get_poi_embedding_model()
             new_embedding = embed_model.embed_query(details_str)
-            
             poi.details_embedding = new_embedding
-            
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to update embedding: {str(e)}")
 
@@ -684,9 +830,29 @@ async def update_person_of_interest(
     db.refresh(poi)
     
     return {
-        "id": poi.id, 
-        "message": "Person of Interest updated. Old data is gone, new vector is live."
+        "id": poi.id,
+        "name": poi.name,
+        "message": "Person of Interest updated successfully"
     }
+
+
+@app.delete(f"{settings.API_PREFIX}/person-of-interest/{{poi_id}}")
+async def delete_person_of_interest(
+    poi_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Delete a Person of Interest"""
+    
+    poi = db.query(models.PersonOfInterest).filter(models.PersonOfInterest.id == poi_id).first()
+    if not poi:
+        raise HTTPException(status_code=404, detail="Person of Interest not found")
+    
+    db.delete(poi)
+    db.commit()
+    
+    return {"message": f"Person of Interest '{poi.name}' deleted successfully"}
+
 
 @app.post(f"{settings.API_PREFIX}/upload")
 async def upload_documents(
@@ -844,49 +1010,27 @@ async def upload_documents(
     db.refresh(job)
     
     # Save suspects to database
-    for suspect_data in suspects_data:
-        suspect = models.Suspect(
-            id=suspect_data.get('id', str(uuid.uuid4())),
-            job_id=job_id,
-            fields=suspect_data.get('fields', [])
-        )
-        db.add(suspect)
-    
     if suspects_data:
+        for suspect_data in suspects_data:
+            suspect = models.Suspect(
+                id=suspect_data.get('id', str(uuid.uuid4())),
+                job_id=job_id
+            )
+            db.add(suspect)
+            db.flush()  # Get the suspect ID before adding fields
+            
+            # Add suspect fields
+            for field_data in suspect_data.get('fields', []):
+                suspect_field = models.SuspectField(
+                    id=field_data.get('id', str(uuid.uuid4())),
+                    suspect_id=suspect.id,
+                    key=field_data.get('key', ''),
+                    value=field_data.get('value', '')
+                )
+                db.add(suspect_field)
+        
         db.commit()
         print(f"Saved {len(suspects_data)} suspects for job {job_id}")
-    
-    cdr_files_processed = 0
-    for idx, (filename, file_type) in enumerate(zip(filenames, file_types)):
-        if file_type == 'cdr':
-            try:
-                gcs_path = f"{gcs_prefix}{filename}"
-                print(f"Processing CDR file: {filename}")
-                
-                # Download and convert CDR to JSONB
-                cdr_data = cdr_processor.process_cdr_file(gcs_path)
-                cdr_processor.validate_cdr_data(cdr_data)
-                
-                # Save CDR record to database
-                cdr_record = models.CDRRecord(
-                    job_id=job_id,
-                    original_filename=filename,
-                    file_path=gcs_path,
-                    data=cdr_data,
-                    record_count=len(cdr_data)
-                )
-                db.add(cdr_record)
-                db.commit()
-                
-                cdr_files_processed += 1
-                job.processed_files += 1
-                db.commit()
-                
-                print(f"✅ CDR file processed: {filename} ({len(cdr_data)} records)")
-            except Exception as e:
-                print(f"❌ Error processing CDR file {filename}: {e}")
-                job.error_message = f"CDR processing error: {str(e)}"
-                db.commit()
     
     # Push per-file messages to Redis queues for true parallel processing
     # Each file gets its own message in a queue, distributed to available workers
@@ -908,16 +1052,18 @@ async def upload_documents(
         elif file_type == 'video':
             redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO, metadata)
             messages_queued += 1
-        # CDR files are processed synchronously above, no queue needed
+        elif file_type == 'cdr':
+            # NEW: Queue CDR files for async processing instead of synchronous
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_CDR, metadata)
+            messages_queued += 1
     
-    print(f"Job {job_id} created: {messages_queued} queued, {cdr_files_processed} CDR processed")
+    print(f"Job {job_id} created: {messages_queued} files queued for processing")
     
     return {
         "job_id": job_id,
         "status": "queued",
         "total_files": len(files),
         "suspects_count": len(suspects_data),
-        "cdr_processed": cdr_files_processed,
         "message": f"Successfully uploaded {len(files)} files and {len(suspects_data)} suspects. Processing started."
     }
 

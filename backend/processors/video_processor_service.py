@@ -486,32 +486,42 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                 
                 print(f"Translating analysis from {source_language} to English...")
                 try:
-                    from document_processor import translate_json_object
+                    import dl_translate as dlt
+                    from langchain_text_splitters import RecursiveCharacterTextSplitter
                     
-                    # Save analysis to temp file for translation
-                    temp_trans = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8')
-                    temp_trans.write(analysis)
-                    temp_trans.close()
+                    # Initialize translation model
+                    mt = dlt.TranslationModel("./dlt/cached_model_m2m100", model_family="m2m100")
                     
-                    # Translate
-                    temp_dir = os.path.dirname(temp_trans.name)
-                    translated_path = translate_json_object(temp_dir, temp_trans.name)
+                    # Split text into chunks for translation
+                    text_splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=1000,
+                        chunk_overlap=0
+                    )
+                    chunks = text_splitter.split_text(analysis)
                     
-                    # Read translation
-                    with open(translated_path, 'r', encoding='utf-8') as f:
-                        final_text = f.read()
+                    print(f"Translating {len(chunks)} text chunks from {source_language} to English...")
                     
-                    # Upload to GCS with three-equal-sign naming
+                    # Translate each chunk
+                    translated_chunks = mt.translate(
+                        chunks, 
+                        source=source_language, 
+                        target='en', 
+                        verbose=True, 
+                        batch_size=1
+                    )
+                    
+                    # Join translated chunks
+                    final_text = " ".join(translated_chunks)
+                    
+                    # Upload to storage with three-equal-sign naming
                     translated_text_path = gcs_path + f'{equal_prefix}translated.txt'
                     storage_manager.upload_text(final_text, translated_text_path)
-                    
-                    # Cleanup
-                    os.unlink(temp_trans.name)
-                    os.unlink(translated_path)
                     
                     print(f"Translation completed: {len(final_text)} characters")
                 except Exception as e:
                     print(f"Translation failed: {e}")
+                    import traceback
+                    traceback.print_exc()
                     # Continue without translation
                 
                 translation_end = datetime.now(timezone.utc)

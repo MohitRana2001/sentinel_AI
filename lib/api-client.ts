@@ -77,6 +77,40 @@ interface ChatResponse {
   }>
 }
 
+// Person of Interest interfaces
+interface PersonOfInterest {
+  id?: number
+  name: string
+  phone_number: string
+  photograph_base64: string
+  details: Record<string, any>
+  created_at?: string
+  updated_at?: string
+}
+
+interface PersonOfInterestCreate {
+  name: string
+  phone_number: string
+  photograph_base64: string
+  details: Record<string, any>
+}
+
+interface PersonOfInterestUpdate {
+  name?: string
+  phone_number?: string
+  photograph_base64?: string
+  details?: Record<string, any>
+}
+
+interface PersonOfInterestImport {
+  persons: PersonOfInterestCreate[]
+}
+
+interface PersonOfInterestListResponse {
+  total: number
+  persons: PersonOfInterest[]
+}
+
 class ApiClient {
   private baseUrl: string
 
@@ -579,6 +613,129 @@ class ApiClient {
 
     return response.json()
   }
+
+  // ==========================================
+  // Person of Interest API Methods
+  // ==========================================
+
+  /**
+   * Create a new Person of Interest
+   */
+  async createPOI(poi: PersonOfInterestCreate): Promise<{ id: number; name: string; message: string }> {
+    const response = await fetch(`${this.baseUrl}/person-of-interest`, {
+      method: "POST",
+      headers: {
+        ...this.getAuthHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(poi),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || "Failed to create Person of Interest")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Import multiple Persons of Interest
+   */
+  async importPOIs(import_data: PersonOfInterestImport): Promise<{
+    success: number
+    created: string[]
+    errors: string[]
+    message: string
+  }> {
+    const response = await fetch(`${this.baseUrl}/person-of-interest/import`, {
+      method: "POST",
+      headers: {
+        ...this.getAuthHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(import_data),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || "Failed to import Persons of Interest")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Get all Persons of Interest
+   */
+  async getPOIs(skip: number = 0, limit: number = 100): Promise<PersonOfInterestListResponse> {
+    const response = await fetch(
+      `${this.baseUrl}/person-of-interest?skip=${skip}&limit=${limit}`,
+      {
+        headers: this.getAuthHeaders(),
+      }
+    )
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch Persons of Interest")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Get a specific Person of Interest by ID
+   */
+  async getPOI(poiId: number): Promise<PersonOfInterest> {
+    const response = await fetch(`${this.baseUrl}/person-of-interest/${poiId}`, {
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || "Person of Interest not found")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Update a Person of Interest
+   */
+  async updatePOI(poiId: number, updates: PersonOfInterestUpdate): Promise<{ id: number; name: string; message: string }> {
+    const response = await fetch(`${this.baseUrl}/person-of-interest/${poiId}`, {
+      method: "PUT",
+      headers: {
+        ...this.getAuthHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(updates),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || "Failed to update Person of Interest")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Delete a Person of Interest
+   */
+  async deletePOI(poiId: number): Promise<{ message: string }> {
+    const response = await fetch(`${this.baseUrl}/person-of-interest/${poiId}`, {
+      method: "DELETE",
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || "Failed to delete Person of Interest")
+    }
+
+    return response.json()
+  }
 }
 
 // Export singleton instance
@@ -592,4 +749,9 @@ export type {
   DocumentContent,
   GraphData,
   ChatResponse,
+  PersonOfInterest,
+  PersonOfInterestCreate,
+  PersonOfInterestUpdate,
+  PersonOfInterestImport,
+  PersonOfInterestListResponse,
 }

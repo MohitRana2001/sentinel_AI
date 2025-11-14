@@ -304,13 +304,6 @@ interface PersonOfInterestManagementProps {
 export function PersonOfInterestManagement({ suspects = [], onSuspectsChange }: PersonOfInterestManagementProps) {
   const [persons, setPersons] = useState<PersonOfInterest[]>([]);
   const [loading, setLoading] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<'synced' | 'unsynced' | 'error'>('unsynced');
-  const [lastSync, setLastSync] = useState<Date | null>(null);
-
-  // Load POIs from backend on mount
-  React.useEffect(() => {
-    loadFromBackend();
-  }, []);
 
   // Sync with parent component if controlled
   React.useEffect(() => {
@@ -329,155 +322,8 @@ export function PersonOfInterestManagement({ suspects = [], onSuspectsChange }: 
     }
   }, [suspects]);
 
-  // Backend sync functions
-  const loadFromBackend = async () => {
-    setLoading(true);
-    try {
-      const backendPOIs = await apiClient.poi.getAll();
-      console.log('Loaded POIs from backend:', backendPOIs.length);
-      
-      // Convert backend POIs to local format
-      const converted = backendPOIs.map(poi => ({
-        id: poi.id,
-        name: poi.name,
-        phone_number: poi.phone_number,
-        photograph_base64: poi.photograph_base64,
-        details: poi.details || {},
-        created_at: poi.created_at,
-        updated_at: poi.updated_at
-      }));
-      
-      setPersons(converted);
-      setSyncStatus('synced');
-      setLastSync(new Date());
-      
-      if (onSuspectsChange) {
-        onSuspectsChange(converted);
-      }
-    } catch (error) {
-      console.error('Failed to load POIs from backend:', error);
-      setSyncStatus('error');
-      alert('Failed to load POIs from backend. Check console for details.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const saveToBackend = async () => {
-    setLoading(true);
-    try {
-      let successCount = 0;
-      let errorCount = 0;
-
-      for (const person of persons) {
-        try {
-          if (person.id) {
-            // Update existing POI
-            await apiClient.poi.update(person.id, {
-              name: person.name,
-              phone_number: person.phone_number,
-              photograph_base64: person.photograph_base64,
-              details: person.details
-            });
-          } else {
-            // Create new POI
-            const created = await apiClient.poi.create({
-              name: person.name,
-              phone_number: person.phone_number,
-              photograph_base64: person.photograph_base64,
-              details: person.details
-            });
-            // Update local person with backend ID
-            person.id = created.id;
-          }
-          successCount++;
-        } catch (error) {
-          console.error(`Failed to sync POI ${person.name}:`, error);
-          errorCount++;
-        }
-      }
-
-      if (errorCount === 0) {
-        setSyncStatus('synced');
-        setLastSync(new Date());
-        alert(`✅ Successfully synced ${successCount} POI(s) to backend`);
-      } else {
-        setSyncStatus('error');
-        alert(`⚠️ Synced ${successCount} POI(s), but ${errorCount} failed. Check console for details.`);
-      }
-    } catch (error) {
-      console.error('Failed to save POIs to backend:', error);
-      setSyncStatus('error');
-      alert('Failed to save POIs to backend. Check console for details.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const importToBackend = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        const data = JSON.parse(e.target?.result as string);
-        
-        // Support multiple file formats
-        let importedPersons: PersonOfInterest[] = [];
-        
-        if (data.persons && Array.isArray(data.persons)) {
-          importedPersons = data.persons;
-        } else if (data.suspects && Array.isArray(data.suspects)) {
-          importedPersons = data.suspects;
-        } else if (Array.isArray(data)) {
-          importedPersons = data;
-        } else {
-          throw new Error('Invalid file format. Expected JSON with "persons" or "suspects" array.');
-        }
-        
-        // Validate required fields
-        const validated = importedPersons.filter((p, idx) => {
-          if (!p.name || !p.phone_number || !p.photograph_base64) {
-            console.warn(`Skipping invalid POI at index ${idx}`);
-            return false;
-          }
-          return true;
-        });
-        
-        if (validated.length === 0) {
-          throw new Error('No valid persons found. Each person must have name, phone_number, and photograph_base64.');
-        }
-        
-        // Import to backend via API
-        setLoading(true);
-        try {
-          const result = await apiClient.poi.importBulk(validated);
-          console.log('Import result:', result);
-          
-          // Reload from backend to get updated list with IDs
-          await loadFromBackend();
-          
-          alert(`✅ Successfully imported ${result.created} POI(s) to backend`);
-        } catch (error) {
-          console.error('Failed to import to backend:', error);
-          alert('Failed to import to backend. Check console for details.');
-        } finally {
-          setLoading(false);
-        }
-        
-      } catch (error) {
-        console.error('Failed to import:', error);
-        alert(`Failed to import file:\n${error instanceof Error ? error.message : 'Unknown error'}`);
-      }
-    };
-    reader.readAsText(file);
-    event.target.value = '';
-  };
-
   const updateParent = (updated: PersonOfInterest[]) => {
     setPersons(updated);
-    setSyncStatus('unsynced'); // Mark as unsynced when local changes are made
     if (onSuspectsChange) {
       onSuspectsChange(updated);
     }
@@ -493,48 +339,13 @@ export function PersonOfInterestManagement({ suspects = [], onSuspectsChange }: 
     updateParent([...persons, newPerson]);
   };
 
-  const updatePerson = async (index: number, updatedPerson: PersonOfInterest) => {
+  const updatePerson = (index: number, updatedPerson: PersonOfInterest) => {
     const updated = [...persons];
     updated[index] = updatedPerson;
     updateParent(updated);
-    
-    // Auto-sync to backend if person has an ID
-    if (updatedPerson.id) {
-      try {
-        await apiClient.poi.update(updatedPerson.id, {
-          name: updatedPerson.name,
-          phone_number: updatedPerson.phone_number,
-          photograph_base64: updatedPerson.photograph_base64,
-          details: updatedPerson.details
-        });
-        console.log(`Auto-synced POI ${updatedPerson.id} to backend`);
-      } catch (error) {
-        console.error('Failed to auto-sync POI:', error);
-        setSyncStatus('error');
-      }
-    }
   };
 
-  const deletePerson = async (index: number) => {
-    const person = persons[index];
-    
-    // Delete from backend if it has an ID
-    if (person.id) {
-      const confirmDelete = window.confirm(
-        `Delete "${person.name}" from backend?\n\nThis will remove the POI and all associated face encodings.`
-      );
-      
-      if (!confirmDelete) return;
-      
-      try {
-        await apiClient.poi.delete(person.id);
-        console.log(`Deleted POI ${person.id} from backend`);
-      } catch (error) {
-        console.error('Failed to delete from backend:', error);
-        alert('Failed to delete from backend. The POI will be removed locally.');
-      }
-    }
-    
+  const deletePerson = (index: number) => {
     updateParent(persons.filter((_, i) => i !== index));
   };
 
@@ -629,43 +440,10 @@ export function PersonOfInterestManagement({ suspects = [], onSuspectsChange }: 
         <div>
           <h2 className="text-2xl font-bold">Persons of Interest</h2>
           <p className="text-muted-foreground">
-            Manage persons with mandatory name, phone, and photo fields
+            Manage persons with mandatory name, phone, and photo fields. POIs will be saved when you upload files.
           </p>
-          {lastSync && (
-            <p className="text-xs text-muted-foreground mt-1">
-              Last synced: {lastSync.toLocaleString()}
-            </p>
-          )}
         </div>
         <div className="flex gap-2">
-          {/* Backend Sync Controls */}
-          <Button
-            variant="outline"
-            onClick={loadFromBackend}
-            disabled={loading}
-            title="Load POIs from backend"
-          >
-            {loading ? (
-              <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
-            ) : (
-              <Cloud className="h-4 w-4 mr-1" />
-            )}
-            Load
-          </Button>
-          <Button
-            variant={syncStatus === 'unsynced' ? 'default' : 'outline'}
-            onClick={saveToBackend}
-            disabled={loading || persons.length === 0}
-            title="Save all POIs to backend"
-          >
-            {loading ? (
-              <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
-            ) : (
-              <Database className="h-4 w-4 mr-1" />
-            )}
-            {syncStatus === 'unsynced' ? 'Sync to Backend' : 'Save'}
-          </Button>
-          
           {/* Import/Export Controls */}
           <input
             type="file"
@@ -674,29 +452,12 @@ export function PersonOfInterestManagement({ suspects = [], onSuspectsChange }: 
             accept=".json"
             onChange={importData}
           />
-          <input
-            type="file"
-            id="import-poi-backend"
-            className="hidden"
-            accept=".json"
-            onChange={importToBackend}
-          />
           <Button
             variant="outline"
             onClick={() => document.getElementById('import-poi')?.click()}
-            title="Import to local state only"
           >
             <Upload className="h-4 w-4 mr-1" />
-            Import Local
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => document.getElementById('import-poi-backend')?.click()}
-            title="Import and sync to backend immediately"
-          >
-            <Upload className="h-4 w-4 mr-1" />
-            <Database className="h-3 w-3" />
-            Import to Backend
+            Import
           </Button>
           <Button
             variant="outline"
@@ -712,38 +473,6 @@ export function PersonOfInterestManagement({ suspects = [], onSuspectsChange }: 
           </Button>
         </div>
       </div>
-
-      {/* Sync Status Indicator */}
-      {syncStatus !== 'synced' && persons.length > 0 && (
-        <div className={`p-3 rounded-lg border ${
-          syncStatus === 'error' 
-            ? 'bg-red-50 border-red-200 text-red-700' 
-            : 'bg-yellow-50 border-yellow-200 text-yellow-700'
-        }`}>
-          <div className="flex items-center gap-2">
-            {syncStatus === 'error' ? (
-              <>
-                <X className="h-4 w-4" />
-                <span className="text-sm font-medium">Sync error - check console for details</span>
-              </>
-            ) : (
-              <>
-                <RefreshCw className="h-4 w-4" />
-                <span className="text-sm font-medium">Local changes not synced to backend</span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={saveToBackend}
-                  disabled={loading}
-                  className="ml-auto"
-                >
-                  Sync Now
-                </Button>
-              </>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

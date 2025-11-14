@@ -122,6 +122,7 @@ class ProcessingJob(Base):
     user = relationship("User", back_populates="jobs", foreign_keys=[user_id])
     documents = relationship("Document", back_populates="job")
     suspects = relationship("Suspect", back_populates="job", cascade="all, delete-orphan")
+    persons_of_interest = relationship("PersonOfInterest", back_populates="job")
     
     # Self-referential for case extensions
     child_jobs = relationship("ProcessingJob", backref="parent_job", remote_side=[id], foreign_keys=[parent_job_id])
@@ -258,12 +259,13 @@ class ActivityLog(Base):
 # --- PERSON OF INTEREST MODELS ---
 
 EMBEDDING_GEMMA_DIM = 768 
-PHOTO_VECTOR_DIM = 1024 
+PHOTO_VECTOR_DIM = 128  # Face recognition embeddings are 128-dimensional 
 
 class PersonOfInterest(Base):
     __tablename__ = "person_of_interest"
 
     id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=True, index=True)  # Associate with upload job
     
     # MANDATORY FIELDS
     name = Column(String, index=True, nullable=False)
@@ -275,31 +277,13 @@ class PersonOfInterest(Base):
     # Uses JSONType for database compatibility (JSONB for PostgreSQL, JSON for SQLite)
     details = Column(JSONType, nullable=False, default=dict)
     
-    # Vectors
-    details_embedding = Column(Vector(EMBEDDING_GEMMA_DIM))
-    photograph_embedding = Column(Vector(PHOTO_VECTOR_DIM))
-    
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
+    job = relationship("ProcessingJob", back_populates="persons_of_interest")
     video_detections = relationship("VideoPOIDetection", back_populates="person_of_interest", cascade="all, delete-orphan")
     cdr_matches = relationship("CDRPOIMatch", back_populates="person_of_interest", cascade="all, delete-orphan")
-
-    __table_args__ = (
-        Index(
-            "ix_poi_details_embedding",
-            "details_embedding",
-            postgresql_using="ivfflat",
-            postgresql_with={"lists": 100}
-        ),
-        Index(
-            "ix_poi_photo_embedding",
-            "photograph_embedding",
-            postgresql_using="ivfflat",
-            postgresql_with={"lists": 100}
-        ),
-    )
 
 class CDRRecord(Base):
     """CDR (Call Data Records) stored as JSON/JSONB"""
@@ -338,10 +322,6 @@ class CDRRecord(Base):
         Index("ix_cdr_job_id", "job_id"),
     )
 
-
-EMBEDDING_GEMMA_DIM = 768 
-
-PHOTO_VECTOR_DIM = 1024
 
 class Suspect(Base):
     """Suspect model - stores suspects associated with processing jobs"""

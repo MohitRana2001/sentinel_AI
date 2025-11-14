@@ -637,12 +637,18 @@ async def analyst_get_jobs(
 @app.post(f"{settings.API_PREFIX}/person-of-interest")
 async def create_person_of_interest(
     poi_in: PersonOfInterestCreate,
+    job_id: Optional[str] = None,  # Optional job_id to associate POI with upload
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Creates a new Person of Interest with mandatory fields: name, phone_number, and photograph."""
+    """Creates a new Person of Interest with mandatory fields: name, phone_number, and photograph.
     
-    print(f"Creating PoI: {poi_in.name}")
+    Args:
+        poi_in: POI data with name, phone_number, photograph_base64, and optional details
+        job_id: Optional job ID to associate this POI with a specific upload/case
+    """
+    
+    print(f"Creating PoI: {poi_in.name}" + (f" for job {job_id}" if job_id else ""))
     
     # Validate mandatory fields
     if not poi_in.name or not poi_in.name.strip():
@@ -654,40 +660,19 @@ async def create_person_of_interest(
     if not poi_in.photograph_base64 or not poi_in.photograph_base64.strip():
         raise HTTPException(status_code=400, detail="Photograph is required")
     
-    # Generate Text Embedding for the details (including phone in details for searching)
-    details_with_phone = poi_in.details.copy()
-    details_with_phone['phone'] = poi_in.phone_number
-    details_str = json.dumps(details_with_phone)
+    # Verify job exists if job_id provided
+    if job_id:
+        job = db.query(models.ProcessingJob).filter(models.ProcessingJob.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     
-    try:
-        embed_model = get_poi_embedding_model()
-        details_embedding = embed_model.embed_query(details_str)
-        print(f"Generated text embedding of length: {len(details_embedding)}")
-    except Exception as e:
-        print(f"Error generating text embedding: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate text embedding: {str(e)}")
-
-    # Generate photo embedding using face recognition
-    photograph_embedding = None
-    try:
-        from photo_embedding import generate_photo_embedding
-        photograph_embedding = generate_photo_embedding(poi_in.photograph_base64)
-        if photograph_embedding:
-            print(f"✅ Generated photo embedding with {len(photograph_embedding)} dimensions")
-        else:
-            print("⚠️ No face detected in photograph, photo embedding will be None")
-    except Exception as e:
-        print(f"⚠️ Error generating photo embedding: {e}")
-        # Continue without photo embedding - it's optional
-    
-    # Save to Database
+    # Save to Database (no embeddings needed)
     new_poi = models.PersonOfInterest(
         name=poi_in.name,
         phone_number=poi_in.phone_number,
         photograph_base64=poi_in.photograph_base64,
-        details=poi_in.details,
-        details_embedding=details_embedding,
-        photograph_embedding=photograph_embedding
+        details=poi_in.details or {},
+        job_id=job_id
     )
     
     db.add(new_poi)
@@ -700,10 +685,22 @@ async def create_person_of_interest(
 @app.post(f"{settings.API_PREFIX}/person-of-interest/import")
 async def import_persons_of_interest(
     import_data: PersonOfInterestImport,
+    job_id: Optional[str] = None,  # Optional job_id to associate POIs with upload
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Import multiple Person of Interest records at once"""
+    """Import multiple Person of Interest records at once
+    
+    Args:
+        import_data: List of POI records to import
+        job_id: Optional job ID to associate all POIs with a specific upload/case
+    """
+    
+    # Verify job exists if job_id provided
+    if job_id:
+        job = db.query(models.ProcessingJob).filter(models.ProcessingJob.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
     
     created_pois = []
     errors = []
@@ -723,30 +720,13 @@ async def import_persons_of_interest(
                 errors.append(f"Record {idx + 1}: Photograph is required")
                 continue
             
-            # Generate embedding
-            details_with_phone = poi_in.details.copy()
-            details_with_phone['phone'] = poi_in.phone_number
-            details_str = json.dumps(details_with_phone)
-            
-            embed_model = get_poi_embedding_model()
-            details_embedding = embed_model.embed_query(details_str)
-            
-            # Generate photo embedding
-            photograph_embedding = None
-            try:
-                from photo_embedding import generate_photo_embedding
-                photograph_embedding = generate_photo_embedding(poi_in.photograph_base64)
-            except Exception as photo_err:
-                print(f"⚠️ Photo embedding error for {poi_in.name}: {photo_err}")
-            
-            # Create POI
+            # Create POI (no embeddings needed)
             new_poi = models.PersonOfInterest(
                 name=poi_in.name,
                 phone_number=poi_in.phone_number,
                 photograph_base64=poi_in.photograph_base64,
-                details=poi_in.details,
-                details_embedding=details_embedding,
-                photograph_embedding=photograph_embedding
+                details=poi_in.details or {},
+                job_id=job_id
             )
             
             db.add(new_poi)
@@ -769,15 +749,23 @@ async def import_persons_of_interest(
 async def get_persons_of_interest(
     skip: int = 0,
     limit: int = 100,
+    job_id: Optional[str] = None,  # Filter by job_id if provided
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Get all Person of Interest records"""
+    """Get all Person of Interest records, optionally filtered by job_id"""
     
-    pois = db.query(models.PersonOfInterest).offset(skip).limit(limit).all()
+    query = db.query(models.PersonOfInterest)
+    
+    # Filter by job_id if provided
+    if job_id:
+        query = query.filter(models.PersonOfInterest.job_id == job_id)
+    
+    pois = query.offset(skip).limit(limit).all()
+    total = query.count()
     
     return {
-        "total": db.query(models.PersonOfInterest).count(),
+        "total": total,
         "persons": [
             {
                 "id": poi.id,
@@ -785,6 +773,7 @@ async def get_persons_of_interest(
                 "phone_number": poi.phone_number,
                 "photograph_base64": poi.photograph_base64,
                 "details": poi.details,
+                "job_id": poi.job_id,
                 "created_at": poi.created_at.isoformat(),
                 "updated_at": poi.updated_at.isoformat()
             }
@@ -811,6 +800,7 @@ async def get_person_of_interest(
         "phone_number": poi.phone_number,
         "photograph_base64": poi.photograph_base64,
         "details": poi.details,
+        "job_id": poi.job_id,
         "created_at": poi.created_at.isoformat(),
         "updated_at": poi.updated_at.isoformat()
     }

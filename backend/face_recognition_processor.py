@@ -26,7 +26,7 @@ class FaceRecognitionProcessor:
         """Initialize face recognition processor with default settings"""
         self.tolerance = 0.50  # Face matching tolerance (0.0-1.0, lower = stricter)
         self.frame_skip_seconds = 0.3  # Process 1 frame every 0.3 seconds
-        print(f"🎯 FaceRecognitionProcessor initialized (tolerance={self.tolerance})")
+        print(f"FaceRecognitionProcessor initialized (tolerance={self.tolerance})")
     
     def load_poi_faces(self, db) -> Tuple[List[np.ndarray], List[Dict]]:
         """
@@ -40,12 +40,12 @@ class FaceRecognitionProcessor:
             - face_encodings: List of numpy arrays representing face embeddings
             - poi_metadata: List of POI info dicts aligned with encodings
         """
-        print("📋 Loading POI face encodings from database...")
+        print("Loading POI face encodings from database...")
         
         pois = db.query(models.PersonOfInterest).all()
-        
+
         if not pois:
-            print("⚠️ No POIs found in database")
+            print("No POIs found in database")
             return [], []
         
         face_encodings = []
@@ -53,6 +53,7 @@ class FaceRecognitionProcessor:
         
         for poi in pois:
             try:
+                print(f"{poi}")
                 # Decode base64 photograph
                 photo_data = poi.photograph_base64
                 
@@ -78,15 +79,15 @@ class FaceRecognitionProcessor:
                         'phone_number': poi.phone_number,
                         'details': poi.details or {}
                     })
-                    print(f"  ✅ Loaded face encoding for: {poi.name}")
+                    print(f"Loaded face encoding for: {poi.name}")
                 else:
-                    print(f"  ⚠️ No face detected in photo for: {poi.name}")
+                    print(f"No face detected in photo for: {poi.name}")
                     
             except Exception as e:
-                print(f"  ❌ Error loading face for {poi.name}: {e}")
+                print(f"Error loading face for {poi.name}: {e}")
                 continue
         
-        print(f"✅ Loaded {len(face_encodings)} POI face encodings from {len(pois)} total POIs")
+        print(f"Loaded {len(face_encodings)} POI face encodings from {len(pois)} total POIs")
         return face_encodings, poi_metadata
     
     def process_video_for_faces(
@@ -112,17 +113,17 @@ class FaceRecognitionProcessor:
             - timestamp: Time in seconds where detected
             - face_location: Bounding box coordinates {top, right, bottom, left}
         """
-        print(f"🎬 Processing video for face recognition: {video_path}")
+        print(f"Processing video for face recognition: {video_path}")
         
         if not poi_encodings:
-            print("⚠️ No POI encodings provided, skipping face recognition")
+            print("No POI encodings provided, skipping face recognition")
             return []
         
         # Open video file
         video = cv2.VideoCapture(video_path)
         
         if not video.isOpened():
-            print(f"❌ Failed to open video: {video_path}")
+            print(f"Failed to open video: {video_path}")
             return []
         
         # Get video properties
@@ -132,7 +133,7 @@ class FaceRecognitionProcessor:
         
         frame_skip_interval = max(1, int(fps * self.frame_skip_seconds))
         
-        print(f"📹 Video Properties:")
+        print(f"Video Properties:")
         print(f"   - Total frames: {total_frames}")
         print(f"   - FPS: {fps}")
         print(f"   - Duration: {duration:.1f}s")
@@ -165,7 +166,7 @@ class FaceRecognitionProcessor:
                 
                 if face_locations:
                     if processed_count % 10 == 0 or len(face_locations) > 0:  # Log every 10th frame or when faces found
-                        print(f"  📸 Frame {frame_number} (t={timestamp:.1f}s): Found {len(face_locations)} face(s)")
+                        print(f"Frame {frame_number} (t={timestamp:.1f}s): Found {len(face_locations)} face(s)")
                     
                     # Encode all faces found in this frame
                     face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
@@ -207,7 +208,7 @@ class FaceRecognitionProcessor:
                                 }
                                 
                                 detections.append(detection)
-                                print(f"    ✅ POI MATCH: {poi['name']} at {timestamp:.1f}s (confidence: {confidence:.2f})")
+                                print(f"POI MATCH: {poi['name']} at {timestamp:.1f}s (confidence: {confidence:.2f})")
             
             frame_number += frame_skip_interval
             
@@ -217,12 +218,12 @@ class FaceRecognitionProcessor:
         
         video.release()
         
-        print(f"✅ Face recognition complete: {len(detections)} POI detection(s) in {processed_count} processed frames")
+        print(f"Face recognition complete: {len(detections)} POI detection(s) in {processed_count} processed frames")
         
         # Deduplicate detections (same POI in consecutive frames)
         if detections:
             unique_pois = set(d['poi_name'] for d in detections)
-            print(f"📊 Unique POIs detected: {len(unique_pois)}")
+            print(f"Unique POIs detected: {len(unique_pois)}")
             for poi_name in sorted(unique_pois):
                 poi_detections = [d for d in detections if d['poi_name'] == poi_name]
                 print(f"   - {poi_name}: {len(poi_detections)} appearance(s)")
@@ -244,10 +245,10 @@ class FaceRecognitionProcessor:
             detections: List of POI detections from process_video_for_faces
         """
         if not detections:
-            print("ℹ️ No detections to save")
+            print("No detections to save")
             return
         
-        print(f"💾 Creating {len(detections)} VideoPOIDetection records...")
+        print(f"Creating {len(detections)} VideoPOIDetection records...")
         
         for detection in detections:
             video_poi = models.VideoPOIDetection(
@@ -262,9 +263,9 @@ class FaceRecognitionProcessor:
         
         try:
             db.commit()
-            print(f"✅ Successfully created {len(detections)} VideoPOIDetection records")
+            print(f"Successfully created {len(detections)} VideoPOIDetection records")
         except Exception as e:
-            print(f"❌ Error saving detections: {e}")
+            print(f"Error saving detections: {e}")
             db.rollback()
             raise
     
@@ -281,16 +282,16 @@ class FaceRecognitionProcessor:
             video_gcs_path: GCS path to video file
         """
         print(f"\n{'='*60}")
-        print(f"🎯 Starting Face Recognition for Document {document_id}")
-        print(f"📹 Video: {video_gcs_path}")
+        print(f"Starting Face Recognition for Document {document_id}")
+        print(f"Video: {video_gcs_path}")
         print(f"{'='*60}\n")
         
         # Load all POI faces from database
         poi_encodings, poi_metadata = self.load_poi_faces(db)
         
         if not poi_encodings:
-            print("⚠️ No POI faces available in database, skipping face recognition")
-            print("   To use face recognition, add POIs with photographs in the dashboard")
+            print("No POI faces available in database, skipping face recognition")
+            print("To use face recognition, add POIs with photographs in the dashboard")
             return
         
         # Download video to temporary file
@@ -298,9 +299,9 @@ class FaceRecognitionProcessor:
         temp_video.close()
         
         try:
-            print(f"⬇️ Downloading video from storage...")
+            print(f"Downloading video from storage...")
             storage_manager.download_file(video_gcs_path, temp_video.name)
-            print(f"✅ Video downloaded to: {temp_video.name}")
+            print(f"Video downloaded to: {temp_video.name}")
             
             # Process video for POI face detections
             detections = self.process_video_for_faces(
@@ -312,12 +313,12 @@ class FaceRecognitionProcessor:
             # Save detection records to database
             if detections:
                 self.create_video_poi_detections(db, document_id, detections)
-                print(f"\n✅ Face recognition completed successfully")
+                print(f"\nFace recognition completed successfully")
             else:
-                print(f"\nℹ️ No POI matches found in this video")
+                print(f"\nNo POI matches found in this video")
         
         except Exception as e:
-            print(f"\n❌ Face recognition error: {e}")
+            print(f"\nFace recognition error: {e}")
             import traceback
             traceback.print_exc()
             raise
@@ -326,7 +327,7 @@ class FaceRecognitionProcessor:
             # Cleanup temporary file
             if os.path.exists(temp_video.name):
                 os.unlink(temp_video.name)
-                print(f"🧹 Cleaned up temporary video file")
+                print(f"Cleaned up temporary video file")
         
         print(f"{'='*60}\n")
 

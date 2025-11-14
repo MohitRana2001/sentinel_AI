@@ -440,5 +440,3 @@ class CDRPOIMatch(Base):
         Index("ix_cdr_poi_job_id", "job_id"),
         Index("ix_cdr_poi_phone_number", "phone_number"),
     )
-        Index("ix_cdr_poi_phone", "phone_number"),
-    )

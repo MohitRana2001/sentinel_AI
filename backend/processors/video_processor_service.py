@@ -77,7 +77,7 @@ class VideoProcessorService:
         metadata = message.get("metadata", {})
         language = metadata.get("language", None)
         
-        print(f"🎬 Video Processor received file: {filename} (job: {job_id}, language: {language})")
+        print(f"Video Processor received file: {filename} (job: {job_id}, language: {language})")
         
         db = SessionLocal()
         try:
@@ -87,7 +87,7 @@ class VideoProcessorService:
             ).first()
             
             if not job:
-                print(f"❌ Job {job_id} not found")
+                print(f"Job {job_id} not found")
                 return
             
             # Update job status to PROCESSING if it's still QUEUED
@@ -104,7 +104,7 @@ class VideoProcessorService:
             
             if existing_doc and existing_doc.summary_path:
                 # File already processed by another worker
-                print(f"⏭️  File {filename} already processed by another worker, skipping")
+                print(f"File {filename} already processed by another worker, skipping")
                 return
             
             # Process this file
@@ -113,10 +113,10 @@ class VideoProcessorService:
             # Check if all files in the job have been processed
             self._check_job_completion(db, job)
             
-            print(f"✅ Completed processing: {filename}")
+            print(f"Completed processing: {filename}")
             
         except Exception as e:
-            print(f"❌ Error processing file {filename}: {e}")
+            print(f"Error processing file {filename}: {e}")
             traceback.print_exc()
             # Don't mark job as failed for single file errors
         finally:
@@ -129,7 +129,7 @@ class VideoProcessorService:
         job_id = message.get("job_id")
         gcs_prefix = message.get("gcs_prefix")
         
-        print(f"🎬 Video Processor received job (legacy): {job_id}")
+        print(f"Video Processor received job (legacy): {job_id}")
         
         db = SessionLocal()
         try:
@@ -157,7 +157,7 @@ class VideoProcessorService:
                     print(f"Error processing {file_path}: {e}")
                     traceback.print_exc()
             
-            print(f"✅ Video processing completed for job {job_id}")
+            print(f"Video processing completed for job {job_id}")
             
             # Check if all files have been processed
             self._check_job_completion(db, job)
@@ -185,7 +185,7 @@ class VideoProcessorService:
             models.Document.job_id == job.id
         ).count()
         
-        print(f"📊 Job {job.id}: {completed_documents}/{job.total_files} files COMPLETED (with graphs), {total_documents} total documents")
+        print(f"Job {job.id}: {completed_documents}/{job.total_files} files COMPLETED (with graphs), {total_documents} total documents")
         
         # Only mark job as completed if ALL files have completed graph processing
         if completed_documents >= job.total_files:
@@ -193,14 +193,14 @@ class VideoProcessorService:
                 job.status = models.JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
                 db.commit()
-                print(f"✅ Job {job.id} marked as COMPLETED (all files + graphs done)")
+                print(f"Job {job.id} marked as COMPLETED (all files + graphs done)")
         elif total_documents > 0:
             # Some files processed but not all graphs built yet, ensure status is PROCESSING
             if job.status == models.JobStatus.QUEUED:
                 job.status = models.JobStatus.PROCESSING
                 job.started_at = job.started_at or datetime.now(timezone.utc)
                 db.commit()
-                print(f"🔄 Job {job.id} status set to PROCESSING ({total_documents} files processing, awaiting graph completion)")
+                print(f"Job {job.id} status set to PROCESSING ({total_documents} files processing, awaiting graph completion)")
     
     def format_timedelta(self, td):
         """
@@ -221,7 +221,7 @@ class VideoProcessorService:
         Extract frames from video at specified rate
         Returns list of frame file paths
         """
-        print(f"🎞️  Extracting frames from video...")
+        print(f"Extracting frames from video...")
         
         # Load the video clip
         video_clip = VideoFileClip(video_file_path)
@@ -250,7 +250,7 @@ class VideoProcessorService:
         
         video_clip.close()
         
-        print(f"✅ Extracted {len(frame_paths)} frames from video")
+        print(f"Extracted {len(frame_paths)} frames from video")
         return frame_paths
     
     def analyze_video_frames(self, frame_folder_path: str) -> str:
@@ -258,17 +258,17 @@ class VideoProcessorService:
         Analyze video frames using vision LLM
         Returns comprehensive analysis of the video content
         """
-        print(f"🔍 Analyzing video frames with vision LLM...")
+        print(f"Analyzing video frames with vision LLM...")
         
         # Prepare image content for LangChain
         chat_content = []
         images = sorted(glob.glob(f"{frame_folder_path}/*.jpg"))
         
         if not images:
-            print(f"⚠️ No frames found in {frame_folder_path}")
+            print(f"No frames found in {frame_folder_path}")
             return "No frames available for analysis"
         
-        print(f"📷 Processing {len(images)} frames...")
+        print(f"Processing {len(images)} frames...")
         
         # Encode all frames as base64 images
         for image_path in images:
@@ -302,7 +302,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         response = chain_with_multiple_images.invoke({})
         
         analysis = response.content
-        print(f"✅ Video analysis completed: {len(analysis)} characters")
+        print(f"Video analysis completed: {len(analysis)} characters")
         
         return analysis
     
@@ -320,20 +320,14 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         7. Create document record with PROCESSING status
         8. Queue for graph processing (status will be updated by graph processor)
         """
-        print(f"🔄 Processing video: {gcs_path}")
+        print(f"Processing video: {gcs_path}")
         
         filename = os.path.basename(gcs_path)
         
         # Determine if translation is needed
-        # If language is provided, use it; otherwise check filename for backward compatibility
         if language:
             needs_translation = language.lower() != 'en' and language.lower() != 'english'
             source_language = language
-        else:
-            # Backward compatibility: check filename
-            is_hindi = 'hindi' in filename.lower()
-            needs_translation = is_hindi
-            source_language = 'hindi' if is_hindi else 'english'
         
         artifact_start_time = datetime.now(timezone.utc)
         stage_times = {}
@@ -407,7 +401,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                 file_type="video"
             )
             
-            print(f"🎯 Starting face recognition for POI detection...")
+            print(f"Starting face recognition for POI detection...")
             try:
                 from face_recognition_processor import face_recognition_processor
                 
@@ -425,14 +419,14 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                     # Save detection records to database
                     if detections:
                         face_recognition_processor.create_video_poi_detections(db, doc_record.id, detections)
-                        print(f"✅ Face recognition completed: {len(detections)} POI detection(s)")
+                        print(f"Face recognition completed: {len(detections)} POI detection(s)")
                     else:
-                        print(f"ℹ️ No POI matches found in video")
+                        print(f"No POI matches found in video")
                 else:
-                    print(f"ℹ️ No POIs in database, skipping face recognition")
+                    print(f"No POIs in database, skipping face recognition")
                     
             except Exception as e:
-                print(f"⚠️ Face recognition failed (non-critical): {e}")
+                print(f"Face recognition failed (non-critical): {e}")
                 import traceback
                 traceback.print_exc()
             
@@ -457,7 +451,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             
             if not analysis or not analysis.strip():
                 analysis = "[ No analysis available ]"
-                print(f"⚠️ Empty analysis for {filename}")
+                print(f"Empty analysis for {filename}")
             
             analysis_end = datetime.now(timezone.utc)
             stage_times['video_analysis'] = (analysis_end - analysis_start).total_seconds()
@@ -470,7 +464,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             # Save analysis to GCS with naming convention
             analysis_path = gcs_path + f'{equal_prefix}analysis.txt'
             storage_manager.upload_text(analysis, analysis_path)
-            print(f"✅ Analysis saved: {len(analysis)} characters")
+            print(f"Analysis saved: {len(analysis)} characters")
             
             # Step 3: Translation (if non-English)
             translated_text_path = None
@@ -490,9 +484,9 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                     file_type="video"
                 )
                 
-                print(f"🌐 Translating analysis from {source_language} to English...")
+                print(f"Translating analysis from {source_language} to English...")
                 try:
-                    from document_processor import translate
+                    from document_processor import translate_json_object
                     
                     # Save analysis to temp file for translation
                     temp_trans = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8')
@@ -501,7 +495,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                     
                     # Translate
                     temp_dir = os.path.dirname(temp_trans.name)
-                    translated_path = translate(temp_dir, temp_trans.name)
+                    translated_path = translate_json_object(temp_dir, temp_trans.name)
                     
                     # Read translation
                     with open(translated_path, 'r', encoding='utf-8') as f:
@@ -515,9 +509,9 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                     os.unlink(temp_trans.name)
                     os.unlink(translated_path)
                     
-                    print(f"✅ Translation completed: {len(final_text)} characters")
+                    print(f"Translation completed: {len(final_text)} characters")
                 except Exception as e:
-                    print(f"⚠️ Translation failed: {e}")
+                    print(f"Translation failed: {e}")
                     # Continue without translation
                 
                 translation_end = datetime.now(timezone.utc)
@@ -537,7 +531,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                 file_type="video"
             )
             
-            print(f"📝 Generating summary...")
+            print(f"Generating summary...")
             summary = self.generate_summary(final_text)
             
             # Save summary to GCS with naming convention
@@ -562,7 +556,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         doc_record.detected_language = language if language else 'en'  # Store detected/selected language
         db.commit()
         db.refresh(doc_record)
-        print(f"✅ Document record updated with language: {doc_record.detected_language}")
+        print(f"Document record updated with language: {doc_record.detected_language}")
         
         # Step 6: Vectorize the text
         vectorization_start = datetime.now(timezone.utc)
@@ -578,7 +572,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             file_type="video"
         )
         
-        print(f"🔢 Creating embeddings from video analysis...")
+        print(f"Creating embeddings from video analysis...")
         try:
             from vector_store import vectorise_and_store_alloydb
             # Delete existing chunks for this document
@@ -588,9 +582,9 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             db.commit()
             # Vectorize the final text (translated if Hindi, original if English)
             vectorise_and_store_alloydb(db, doc_record.id, final_text, summary)
-            print(f"✅ Embeddings created for video analysis")
+            print(f"Embeddings created for video analysis")
         except Exception as e:
-            print(f"⚠️ Vectorization failed: {e}")
+            print(f"Vectorization failed: {e}")
         
         vectorization_end = datetime.now(timezone.utc)
         stage_times['vectorization'] = (vectorization_end - vectorization_start).total_seconds()
@@ -625,7 +619,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         job.processed_files += 1
         db.commit()
         
-        print(f"✅ Completed video processing (awaiting graph): {filename}")
+        print(f"Completed video processing (awaiting graph): {filename}")
     
     def generate_summary(self, text: str) -> str:
         """
@@ -637,15 +631,15 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         # ===== LOCAL DEV MODE: Use Gemini if configured =====
         try:
             if settings.USE_GEMINI_FOR_DEV and settings.GEMINI_API_KEY:
-                print(f"🔷 Using Gemini API for summarization (LOCAL DEV MODE)")
+                print(f"Using Gemini API for summarization (LOCAL DEV MODE)")
                 from gemini_client import gemini_client
                 summary = gemini_client.generate_summary(text, max_words=200)
-                print(f"✅ Gemini summary generated")
+                print(f"Gemini summary generated")
                 return summary
         except (ImportError, AttributeError) as e:
-            print(f"⚠️ Gemini not configured for summary: {e}")
+            print(f"Gemini not configured for summary: {e}")
         except Exception as e:
-            print(f"⚠️ Gemini summary error: {e}")
+            print(f"Gemini summary error: {e}")
         
         # ===== PRODUCTION MODE: Use local LLM =====
         print(f"🔧 Using local LLM for summarization (PRODUCTION MODE)")
@@ -665,16 +659,16 @@ Summary:"""
             )
             return response['message']['content'].strip()
         except Exception as e:
-            print(f"⚠️ Summary generation error: {e}")
+            print(f"Summary generation error: {e}")
             return "Summary generation failed"
 
 
 def main():
     """Main entry point"""
-    print("🚀 Starting Video Processor Service...")
-    print(f"📡 Using Redis Queue for parallel processing")
-    print(f"🎬 Frame extraction rate: {SAVING_FRAMES_PER_SECOND} fps (1 frame every ~{1/SAVING_FRAMES_PER_SECOND:.1f} seconds)")
-    print(f"👂 Listening to queue: {settings.REDIS_QUEUE_VIDEO}")
+    print("Starting Video Processor Service...")
+    print(f"Using Redis Queue for parallel processing")
+    print(f"Frame extraction rate: {SAVING_FRAMES_PER_SECOND} fps (1 frame every ~{1/SAVING_FRAMES_PER_SECOND:.1f} seconds)")
+    print(f"Listening to queue: {settings.REDIS_QUEUE_VIDEO}")
     
     service = VideoProcessorService()
     

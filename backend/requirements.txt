@@ -1,4 +1,3 @@
-
 fastapi
 uvicorn
 python-multipart
@@ -48,6 +47,11 @@ passlib[bcrypt]
 python-dateutil
 bcrypt<4
 
+# Document conversion utilities
+reportlab>=4.0.0  # For TXT to PDF conversion
+markdown>=3.4.0  # For MD to HTML conversion
+weasyprint>=60.0  # For HTML to PDF conversion (MD files)
+
 python-dotenv
 httpx
 aiofiles
@@ -58,3 +62,7 @@ fastapi
 sqlalchemy
 dotenv
 pydantic[email]
+
+opencv-python
+face-recognition
+numpy

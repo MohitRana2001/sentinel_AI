@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 
-import type { User, AuthContextType, Document } from "@/types";
+import type { User, AuthContextType, Document, MediaItem, MediaType } from "@/types";
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -65,6 +65,7 @@ async function request<T>(
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [documents, setDocuments] = useState<Document[]>([]);
+  const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
   const [token, setToken] = useState<string | null>(null);
 
   const persistToken = useCallback((value: string | null) => {
@@ -168,6 +169,214 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setDocuments((prev) => [document, ...prev]);
   }, []);
 
+  // NEW: Upload media (document/audio/video)
+  const uploadMedia = useCallback(async (file: File, mediaType: MediaType, language?: string) => {
+    if (!token) {
+      throw new Error("Not authenticated");
+    }
+
+    const formData = new FormData();
+    formData.append('files', file);  // Changed from 'file' to 'files' (backend expects List[UploadFile])
+    formData.append('media_type', mediaType);
+    
+    // For audio/video, send the language code
+    if (language && (mediaType === 'audio' || mediaType === 'video')) {
+      formData.append('language', language);
+    }
+
+    const response = await fetch(`${API_BASE_URL}/upload`, {  // Changed from /media/upload to /upload
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        // Don't set Content-Type - let browser set it with boundary for multipart/form-data
+      },
+      body: formData
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
+      throw new Error(error.detail || 'Upload failed');
+    }
+
+    const { job_id, status } = await response.json();  // Backend returns job_id, not media_id
+
+    // Add to local state immediately
+    const newItem: MediaItem = {
+      id: job_id,  // Use job_id as the media item id
+      fileName: file.name,
+      mediaType,
+      uploadedAt: new Date().toISOString(),
+      fileSize: file.size / 1024 / 1024,
+      status: 'queued',
+      jobId: job_id,
+      language,
+      progress: 0
+    };
+
+    setMediaItems(prev => [newItem, ...prev]);
+
+    // Start polling for status
+    pollJobStatus(job_id, job_id);  // Use job_id for both
+  }, [token]);
+
+  // NEW: Poll job status every 2 seconds with per-artifact tracking
+  const pollJobStatus = useCallback(async (jobId: string, mediaId: string) => {
+    if (!token) return;
+
+    const interval = setInterval(async () => {
+      try{
+        const response = await fetch(`${API_BASE_URL}/jobs/${encodeURIComponent(jobId)}/status`, {  // Use /jobs/{job_id}/status
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          }
+        });
+
+        if (!response.ok) {
+          clearInterval(interval);
+          return;
+        }
+
+        const { 
+          status, 
+          progress_percentage, 
+          error_message, 
+          current_stage, 
+          processing_stages,
+          artifacts  // NEW: Per-artifact status array
+        } = await response.json();
+
+        // Update media items with per-artifact status
+        if (artifacts && artifacts.length > 0) {
+          setMediaItems(prev => prev.map(item => {
+            // Find the matching artifact for this media item
+            const artifact = artifacts.find((a: any) => 
+              item.fileName === a.filename || item.id.endsWith(a.filename)
+            );
+            
+            if (artifact && item.jobId === jobId) {
+              return {
+                ...item,
+                status: artifact.status === 'completed' ? 'completed' : 
+                        artifact.status === 'failed' ? 'failed' : 
+                        artifact.status === 'processing' ? 'processing' : 'queued',
+                progress: artifact.status === 'completed' ? 100 : 
+                          artifact.status === 'processing' ? 50 : 
+                          artifact.status === 'failed' ? 0 : 0,
+                currentStage: artifact.current_stage,
+                processingStages: artifact.processing_stages || {},
+                startedAt: artifact.started_at,
+                completedAt: artifact.completed_at,
+                errorMessage: artifact.error_message
+              };
+            }
+            return item;
+          }));
+        } else {
+          // Fallback to job-level status if no artifacts
+          setMediaItems(prev => prev.map(item => 
+            item.jobId === jobId 
+              ? { 
+                  ...item, 
+                  status: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : status === 'processing' ? 'processing' : 'queued',
+                  progress: progress_percentage || 0,
+                  currentStage: current_stage,
+                  processingStages: processing_stages || {},
+                }
+              : item
+          ));
+        }
+
+        if (status === 'completed' || status === 'failed') {
+          clearInterval(interval);
+        }
+      } catch (error) {
+        console.error('Error polling status:', error);
+        clearInterval(interval);
+      }
+    }, 2000);
+  }, [token]);
+
+  // NEW: Unified upload for multiple media types + suspects in one job
+  const uploadJob = useCallback(async (job: { files: any[]; suspects: any[] }, caseName?: string, parentJobId?: string) => {
+    if (!token) {
+      throw new Error("Not authenticated");
+    }
+
+    const formData = new FormData();
+    
+    // Add all files with their metadata
+    job.files.forEach((fileWithMeta, index) => {
+      formData.append('files', fileWithMeta.file);
+      formData.append(`media_types`, fileWithMeta.mediaType);
+      if (fileWithMeta.language) {
+        formData.append(`languages`, fileWithMeta.language);
+      } else {
+        formData.append(`languages`, '');  // Empty string for files without language
+      }
+    });
+
+    // Add suspects data as JSON
+    if (job.suspects.length > 0) {
+      console.log('📤 Uploading POIs:', job.suspects.length);
+      job.suspects.forEach((suspect, idx) => {
+        console.log(`  POI ${idx + 1}:`, {
+          name: suspect.name,
+          phone: suspect.phone_number,
+          hasPhoto: !!suspect.photograph_base64,
+          photoLength: suspect.photograph_base64?.length || 0,
+          details: suspect.details
+        });
+      });
+      formData.append('suspects', JSON.stringify(job.suspects));
+    } else {
+      console.log('ℹ️ No POIs to upload');
+    }
+    
+    // Add case name if provided
+    if (caseName) {
+      formData.append('case_name', caseName);
+    }
+    
+    // Add parent job ID if provided
+    if (parentJobId) {
+      formData.append('parent_job_id', parentJobId);
+    }
+
+    const response = await fetch(`${API_BASE_URL}/upload`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+      body: formData
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
+      throw new Error(error.detail || 'Upload failed');
+    }
+
+    const { job_id, status } = await response.json();
+
+    // Add all files to mediaItems state
+    job.files.forEach((fileWithMeta) => {
+      const newItem: MediaItem = {
+        id: `${job_id}-${fileWithMeta.file.name}`,
+        fileName: fileWithMeta.file.name,
+        mediaType: fileWithMeta.mediaType,
+        uploadedAt: new Date().toISOString(),
+        fileSize: fileWithMeta.file.size / 1024 / 1024,
+        status: 'queued',
+        jobId: job_id,
+        language: fileWithMeta.language,
+        progress: 0
+      };
+      setMediaItems(prev => [newItem, ...prev]);
+    });
+
+    // Start polling for status
+    pollJobStatus(job_id, job_id);
+  }, [token, pollJobStatus]);
+
   const contextValue = useMemo<AuthContextType>(
     () => ({
       user,
@@ -176,9 +385,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signup,
       logout,
       documents,
+      mediaItems,
       addDocument,
+      uploadMedia,
+      uploadJob,
     }),
-    [addDocument, documents, login, logout, signup, user]
+    [addDocument, documents, mediaItems, login, logout, signup, uploadMedia, uploadJob, user]
   );
 
   return (

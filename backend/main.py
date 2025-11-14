@@ -1,8 +1,10 @@
-from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 import uuid
+from langchain_ollama import OllamaEmbeddings
+import json
 
 import enum
 from pydantic import BaseModel, EmailStr
@@ -18,6 +20,7 @@ from models import RBACLevel
 from storage_config import storage_manager
 from redis_pubsub import redis_pubsub
 from vector_store import VectorStore
+from cdr_processor import cdr_processor
 try:
     from langchain_neo4j import Neo4jGraph
 except Exception:
@@ -109,6 +112,24 @@ class JobWithAnalyst(BaseModel):
     processed_files: int
     created_at: datetime
     progress_percentage: float
+
+class PersonOfInterestCreate(BaseModel):
+    """Schema for creating a new Person of Interest"""
+    name: str  # MANDATORY
+    phone_number: str  # MANDATORY
+    photograph_base64: str  # MANDATORY - Base64 encoded photo
+    details: Dict[str, Any] = {}  # OPTIONAL - Additional details
+
+class PersonOfInterestUpdate(BaseModel):
+    """Schema for updating a Person of Interest"""
+    name: Optional[str] = None
+    phone_number: Optional[str] = None
+    photograph_base64: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+
+class PersonOfInterestImport(BaseModel):
+    """Schema for importing multiple Person of Interest records"""
+    persons: List[PersonOfInterestCreate]
 # --- END: PYDANTIC MODELS ---
 
 
@@ -179,6 +200,9 @@ async def startup_event():
     print("Database initialized")
     print(f"API running at {settings.API_HOST}:{settings.API_PORT}")
     print(f"Docs available at {settings.API_PREFIX}/docs")
+    print("Registered Routes")
+    for route in app.routes:
+        print(route.path)
 
 
 @app.get("/")
@@ -211,6 +235,17 @@ async def get_config():
         "rbac_levels": settings.RBAC_LEVELS
     }
 
+def get_poi_embedding_model():
+    """
+    Returns the Ollama embedding model for vectorizing PoI details.
+    Using the same model as document processor.
+    """
+    return OllamaEmbeddings(
+        model="embeddinggemma:latest",
+        # Assuming Ollama runs on port 11434 on the configured host
+        # base_url=f"http://{settings.CHAT_LLM_HOST}:11434"
+        base_url="http://127.0.0.1:11434"  
+    )
 
 # --- START: USER MANAGEMENT ENDPOINTS ---
 
@@ -524,15 +559,25 @@ async def manager_get_jobs(
     db: Session = Depends(get_db),
     manager_user: models.User = Depends(get_manager)
 ):
-    """Manager endpoint to get all jobs from their analysts."""
+    """Manager endpoint to get all jobs from their analysts. Excludes CDR-only jobs."""
     query = db.query(models.ProcessingJob).order_by(
         models.ProcessingJob.created_at.desc()
     )
     query = filter_jobs_scope(query, manager_user)
     jobs = query.limit(limit).offset(offset).all()
     
+    # Filter helper for CDR-only jobs
+    def is_cdr_only_job(job):
+        if not job.file_types or len(job.file_types) == 0:
+            return False
+        return all(ft == 'cdr' for ft in job.file_types)
+    
     result = []
     for job in jobs:
+        # Skip CDR-only jobs
+        if is_cdr_only_job(job):
+            continue
+            
         analyst = job.user
         progress = (job.processed_files / job.total_files * 100) if job.total_files > 0 else 0
         
@@ -557,7 +602,7 @@ async def analyst_get_jobs(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    """Analyst endpoint to get their own jobs."""
+    """Analyst endpoint to get their own jobs. Excludes CDR-only jobs."""
     if current_user.rbac_level != models.RBACLevel.ANALYST:
         raise HTTPException(status_code=403, detail="Analyst access required")
     
@@ -567,6 +612,12 @@ async def analyst_get_jobs(
     
     jobs = query.limit(limit).offset(offset).all()
     
+    # Filter out CDR-only jobs (jobs where all file_types are 'cdr')
+    def is_cdr_only_job(job):
+        if not job.file_types or len(job.file_types) == 0:
+            return False
+        return all(ft == 'cdr' for ft in job.file_types)
+    
     return [
         {
             "job_id": job.id,
@@ -574,21 +625,287 @@ async def analyst_get_jobs(
             "total_files": job.total_files,
             "processed_files": job.processed_files,
             "created_at": job.created_at.isoformat(),
-            "progress_percentage": (job.processed_files / job.total_files * 100) if job.total_files > 0 else 0
+            "progress_percentage": (job.processed_files / job.total_files * 100) if job.total_files > 0 else 0,
+            "case_name": job.case_name  # Include case_name for filtering
         }
         for job in jobs
+        if not is_cdr_only_job(job)
     ]
 
 # --- END: USER MANAGEMENT ENDPOINTS ---
 
+@app.post(f"{settings.API_PREFIX}/person-of-interest")
+async def create_person_of_interest(
+    poi_in: PersonOfInterestCreate,
+    job_id: Optional[str] = None,  # Optional job_id to associate POI with upload
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Creates a new Person of Interest with mandatory fields: name, phone_number, and photograph.
+    
+    Args:
+        poi_in: POI data with name, phone_number, photograph_base64, and optional details
+        job_id: Optional job ID to associate this POI with a specific upload/case
+    """
+    
+    print(f"Creating PoI: {poi_in.name}" + (f" for job {job_id}" if job_id else ""))
+    
+    # Validate mandatory fields
+    if not poi_in.name or not poi_in.name.strip():
+        raise HTTPException(status_code=400, detail="Name is required")
+    
+    if not poi_in.phone_number or not poi_in.phone_number.strip():
+        raise HTTPException(status_code=400, detail="Phone number is required")
+    
+    if not poi_in.photograph_base64 or not poi_in.photograph_base64.strip():
+        raise HTTPException(status_code=400, detail="Photograph is required")
+    
+    # Verify job exists if job_id provided
+    if job_id:
+        job = db.query(models.ProcessingJob).filter(models.ProcessingJob.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    # Save to Database (no embeddings needed)
+    new_poi = models.PersonOfInterest(
+        name=poi_in.name,
+        phone_number=poi_in.phone_number,
+        photograph_base64=poi_in.photograph_base64,
+        details=poi_in.details or {},
+        job_id=job_id
+    )
+    
+    db.add(new_poi)
+    db.commit()
+    db.refresh(new_poi)
+    
+    return {"id": new_poi.id, "name": new_poi.name, "message": "Person of Interest created successfully"}
+
+
+@app.post(f"{settings.API_PREFIX}/person-of-interest/import")
+async def import_persons_of_interest(
+    import_data: PersonOfInterestImport,
+    job_id: Optional[str] = None,  # Optional job_id to associate POIs with upload
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Import multiple Person of Interest records at once
+    
+    Args:
+        import_data: List of POI records to import
+        job_id: Optional job ID to associate all POIs with a specific upload/case
+    """
+    
+    # Verify job exists if job_id provided
+    if job_id:
+        job = db.query(models.ProcessingJob).filter(models.ProcessingJob.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    created_pois = []
+    errors = []
+    
+    for idx, poi_in in enumerate(import_data.persons):
+        try:
+            # Validate mandatory fields
+            if not poi_in.name or not poi_in.name.strip():
+                errors.append(f"Record {idx + 1}: Name is required")
+                continue
+            
+            if not poi_in.phone_number or not poi_in.phone_number.strip():
+                errors.append(f"Record {idx + 1}: Phone number is required")
+                continue
+            
+            if not poi_in.photograph_base64 or not poi_in.photograph_base64.strip():
+                errors.append(f"Record {idx + 1}: Photograph is required")
+                continue
+            
+            # Create POI (no embeddings needed)
+            new_poi = models.PersonOfInterest(
+                name=poi_in.name,
+                phone_number=poi_in.phone_number,
+                photograph_base64=poi_in.photograph_base64,
+                details=poi_in.details or {},
+                job_id=job_id
+            )
+            
+            db.add(new_poi)
+            created_pois.append(new_poi.name)
+            
+        except Exception as e:
+            errors.append(f"Record {idx + 1} ({poi_in.name}): {str(e)}")
+    
+    db.commit()
+    
+    return {
+        "success": len(created_pois),
+        "created": created_pois,
+        "errors": errors,
+        "message": f"Successfully imported {len(created_pois)} out of {len(import_data.persons)} records"
+    }
+
+
+@app.get(f"{settings.API_PREFIX}/person-of-interest")
+async def get_persons_of_interest(
+    skip: int = 0,
+    limit: int = 100,
+    job_id: Optional[str] = None,  # Filter by job_id if provided
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get all Person of Interest records, optionally filtered by job_id"""
+    
+    query = db.query(models.PersonOfInterest)
+    
+    # Filter by job_id if provided
+    if job_id:
+        query = query.filter(models.PersonOfInterest.job_id == job_id)
+    
+    pois = query.offset(skip).limit(limit).all()
+    total = query.count()
+    
+    return {
+        "total": total,
+        "persons": [
+            {
+                "id": poi.id,
+                "name": poi.name,
+                "phone_number": poi.phone_number,
+                "photograph_base64": poi.photograph_base64,
+                "details": poi.details,
+                "job_id": poi.job_id,
+                "created_at": poi.created_at.isoformat(),
+                "updated_at": poi.updated_at.isoformat()
+            }
+            for poi in pois
+        ]
+    }
+
+
+@app.get(f"{settings.API_PREFIX}/person-of-interest/{{poi_id}}")
+async def get_person_of_interest(
+    poi_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Get a specific Person of Interest by ID"""
+    
+    poi = db.query(models.PersonOfInterest).filter(models.PersonOfInterest.id == poi_id).first()
+    if not poi:
+        raise HTTPException(status_code=404, detail="Person of Interest not found")
+    
+    return {
+        "id": poi.id,
+        "name": poi.name,
+        "phone_number": poi.phone_number,
+        "photograph_base64": poi.photograph_base64,
+        "details": poi.details,
+        "job_id": poi.job_id,
+        "created_at": poi.created_at.isoformat(),
+        "updated_at": poi.updated_at.isoformat()
+    }
+
+
+@app.put(f"{settings.API_PREFIX}/person-of-interest/{{poi_id}}")
+async def update_person_of_interest(
+    poi_id: int,
+    poi_update: PersonOfInterestUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Updates a Person of Interest. 
+    If 'details' are changed, it OVERWRITES the old data 
+    and RE-CALCULATES the vector embedding immediately.
+    """
+    
+    # Find the existing record
+    poi = db.query(models.PersonOfInterest).filter(models.PersonOfInterest.id == poi_id).first()
+    if not poi:
+        raise HTTPException(status_code=404, detail="Person of Interest not found")
+
+    # Update basic fields if provided
+    if poi_update.name is not None:
+        poi.name = poi_update.name
+    
+    if poi_update.phone_number is not None:
+        poi.phone_number = poi_update.phone_number
+    
+    if poi_update.photograph_base64 is not None:
+        poi.photograph_base64 = poi_update.photograph_base64
+        
+    if poi_update.details is not None:
+        print(f"Details changed for {poi.name}. Overwriting data and re-calculating vector...")
+        
+        poi.details = poi_update.details
+        
+        # Recalculate embedding with phone number included
+        details_with_phone = poi_update.details.copy()
+        details_with_phone['phone'] = poi.phone_number
+        details_str = json.dumps(details_with_phone)
+        
+        try:
+            embed_model = get_poi_embedding_model()
+            new_embedding = embed_model.embed_query(details_str)
+            poi.details_embedding = new_embedding
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to update embedding: {str(e)}")
+
+    db.commit()
+    db.refresh(poi)
+    
+    return {
+        "id": poi.id,
+        "name": poi.name,
+        "message": "Person of Interest updated successfully"
+    }
+
+
+@app.delete(f"{settings.API_PREFIX}/person-of-interest/{{poi_id}}")
+async def delete_person_of_interest(
+    poi_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """Delete a Person of Interest"""
+    
+    poi = db.query(models.PersonOfInterest).filter(models.PersonOfInterest.id == poi_id).first()
+    if not poi:
+        raise HTTPException(status_code=404, detail="Person of Interest not found")
+    
+    db.delete(poi)
+    db.commit()
+    
+    return {"message": f"Person of Interest '{poi.name}' deleted successfully"}
 
 
 @app.post(f"{settings.API_PREFIX}/upload")
 async def upload_documents(
     files: List[UploadFile] = File(...),
+    media_types: List[str] = Form(default=[]),
+    languages: List[str] = Form(default=[]),
+    suspects: str = Form(default="[]"),
+    case_name: str = Form(...),  # MANDATORY: Case name for grouping jobs
+    parent_job_id: str = Form(default=None),  # NEW: Parent job ID for extending cases
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    # Validate case_name is provided and non-empty
+    if not case_name or not case_name.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Case name is required and cannot be empty"
+        )
+    
+    # Parse suspects from JSON string
+    try:
+        suspects_data = json.loads(suspects) if suspects else []
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid suspects JSON format"
+        )
+    
     # Validation checks
     if len(files) > settings.MAX_UPLOAD_FILES:
         raise HTTPException(
@@ -660,24 +977,40 @@ async def upload_documents(
     
     filenames = []
     file_types = []
+    file_languages = []
     
-    for file in files:
+    # Use provided media_types if available, otherwise infer from extension
+    for idx, file in enumerate(files):
         try:
             gcs_path = f"{gcs_prefix}{file.filename}"
             storage_manager.upload_file(file.file, gcs_path)
             filenames.append(file.filename)
             
-            ext = file.filename.split('.')[-1].lower()
-            if ext in ['pdf', 'docx', 'txt']:
-                file_types.append('document')
-            elif ext in ['mp3', 'wav', 'm4a']:
-                file_types.append('audio')
-            elif ext in ['mp4', 'avi', 'mov']:
-                file_types.append('video')
+            # Determine file type from media_types if provided, otherwise from extension
+            if idx < len(media_types) and media_types[idx]:
+                file_type = media_types[idx]
             else:
-                file_types.append('document')
+                ext = file.filename.split('.')[-1].lower()
+                if ext in ['pdf', 'docx', 'txt']:
+                    file_type = 'document'
+                elif ext in ['mp3', 'wav', 'm4a']:
+                    file_type = 'audio'
+                elif ext in ['mp4', 'avi', 'mov']:
+                    file_type = 'video'
+                elif ext in ['csv', 'xlsx']:
+                    file_type = 'cdr'
+                else:
+                    file_type = 'document'
             
-            print(f"Uploaded: {file.filename} to {gcs_path}")
+            file_types.append(file_type)
+            
+            # Get language if provided
+            if idx < len(languages) and languages[idx]:
+                file_languages.append(languages[idx])
+            else:
+                file_languages.append(None)
+            
+            print(f"Uploaded: {file.filename} to {gcs_path} (type: {file_type})")
         except Exception as e:
             print(f"Error uploading {file.filename}: {e}")
             raise HTTPException(
@@ -692,37 +1025,130 @@ async def upload_documents(
         original_filenames=filenames,
         file_types=file_types,
         total_files=len(files),
-        status=models.JobStatus.QUEUED
+        status=models.JobStatus.QUEUED,
+        case_name=case_name,  # NEW: Store case name
+        parent_job_id=parent_job_id  # NEW: Link to parent job if extending case
     )
     
     db.add(job)
     db.commit()
     db.refresh(job)
     
+    # Save Persons of Interest (POIs) to database
+    # POIs are now stored instead of suspects for better face recognition integration
+    if suspects_data:
+        print(f"📋 Processing {len(suspects_data)} POIs for job {job_id}")
+        for idx, poi_data in enumerate(suspects_data):
+            print(f"  POI {idx + 1}: {poi_data.get('name', 'NO NAME')} - {poi_data.get('phone_number', 'NO PHONE')}")
+            
+            # Validate required fields
+            if not poi_data.get('name') or not poi_data.get('phone_number') or not poi_data.get('photograph_base64'):
+                print(f"  ⚠️ Skipping invalid POI at index {idx}: missing required fields")
+                continue
+            
+            # Create POI record - now with job_id association
+            poi = models.PersonOfInterest(
+                job_id=job_id,
+                name=poi_data.get('name', ''),
+                phone_number=poi_data.get('phone_number', ''),
+                photograph_base64=poi_data.get('photograph_base64', ''),
+                details=poi_data.get('details', {})
+            )
+            db.add(poi)
+        
+        db.commit()
+        print(f"✅ Saved POIs for job {job_id}")
+    else:
+        print(f"ℹ️ No POIs provided for job {job_id}")
+    
     # Push per-file messages to Redis queues for true parallel processing
     # Each file gets its own message in a queue, distributed to available workers
     messages_queued = 0
-    for filename, file_type in zip(filenames, file_types):
+    for idx, (filename, file_type) in enumerate(zip(filenames, file_types)):
         gcs_path = f"{gcs_prefix}{filename}"
         
+        # Prepare metadata with language if available
+        metadata = {}
+        if idx < len(file_languages) and file_languages[idx]:
+            metadata['language'] = file_languages[idx]
+        
         if file_type == 'document':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_DOCUMENT)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_DOCUMENT, metadata)
             messages_queued += 1
         elif file_type == 'audio':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_AUDIO)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_AUDIO, metadata)
             messages_queued += 1
         elif file_type == 'video':
-            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO)
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_VIDEO, metadata)
+            messages_queued += 1
+        elif file_type == 'cdr':
+            # NEW: Queue CDR files for async processing instead of synchronous
+            redis_pubsub.push_file_to_queue(job_id, gcs_path, filename, settings.REDIS_QUEUE_CDR, metadata)
             messages_queued += 1
     
-    print(f"Job {job_id} created and queued for processing ({messages_queued} messages in queue)")
+    print(f"Job {job_id} created: {messages_queued} files queued for processing")
     
     return {
         "job_id": job_id,
         "status": "queued",
         "total_files": len(files),
-        "message": f"Successfully uploaded {len(files)} files. Processing started."
+        "pois_count": len(suspects_data),
+        "message": f"Successfully uploaded {len(files)} files and {len(suspects_data)} POI(s). Processing started."
     }
+
+@app.get(f"{settings.API_PREFIX}/cases")
+async def get_cases(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Get all unique case names for the current user (or their analysts if manager)
+    """
+    query = db.query(models.ProcessingJob.case_name).filter(
+        models.ProcessingJob.case_name.isnot(None)
+    ).distinct()
+    
+    query = filter_jobs_scope(query, current_user)
+    
+    cases = [row[0] for row in query.all()]
+    
+    return {
+        "cases": cases
+    }
+
+
+@app.get(f"{settings.API_PREFIX}/cases/{{case_name}}/jobs")
+async def get_case_jobs(
+    case_name: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Get all jobs for a specific case
+    """
+    query = db.query(models.ProcessingJob).filter(
+        models.ProcessingJob.case_name == case_name
+    ).order_by(models.ProcessingJob.created_at.desc())
+    
+    query = filter_jobs_scope(query, current_user)
+    jobs = query.all()
+    
+    return {
+        "case_name": case_name,
+        "jobs": [
+            {
+                "job_id": job.id,
+                "status": job.status.value,
+                "total_files": job.total_files,
+                "processed_files": job.processed_files,
+                "parent_job_id": job.parent_job_id,
+                "created_at": job.created_at.isoformat(),
+                "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+            }
+            for job in jobs
+        ]
+    }
+
 
 @app.get(f"{settings.API_PREFIX}/jobs/{{job_id:path}}/status")
 async def get_job_status(
@@ -730,7 +1156,6 @@ async def get_job_status(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    # (Your original code...)
     job = db.query(models.ProcessingJob).filter(
         models.ProcessingJob.id == job_id
     ).first()
@@ -744,16 +1169,57 @@ async def get_job_status(
     if not user_has_job_access(current_user, job):
         raise HTTPException(status_code=403, detail="Insufficient permissions for this job")
     
+    # Get per-artifact status
+    documents = db.query(models.Document).filter(
+        models.Document.job_id == job_id
+    ).all()
+    
+    artifacts = []
+    total_artifact_progress = 0.0
+    
+    for doc in documents:
+        # Calculate progress for this artifact using the same logic as Redis pub/sub
+        artifact_progress = redis_pubsub._calculate_progress(
+            current_stage=doc.current_stage,
+            processing_stages=doc.processing_stages,
+            file_type=doc.file_type.value if doc.file_type else None,
+            status=doc.status.value if doc.status else "queued"
+        )
+        
+        total_artifact_progress += artifact_progress
+        
+        artifacts.append({
+            "id": doc.id,
+            "filename": doc.original_filename,
+            "file_type": doc.file_type.value,
+            "status": doc.status.value if doc.status else "queued",
+            "current_stage": doc.current_stage,
+            "processing_stages": doc.processing_stages or {},
+            "progress": artifact_progress,  # Per-artifact progress
+            "started_at": doc.started_at.isoformat() if doc.started_at else None,
+            "completed_at": doc.completed_at.isoformat() if doc.completed_at else None,
+            "error_message": doc.error_message
+        })
+    
+    # Calculate overall job progress as average of all artifacts
     progress_percentage = 0.0
-    if job.total_files > 0:
+    if len(documents) > 0:
+        progress_percentage = total_artifact_progress / len(documents)
+    elif job.total_files > 0:
+        # Fallback to old calculation if no documents yet
         progress_percentage = (job.processed_files / job.total_files) * 100
     
     return {
         "job_id": job.id,
         "status": job.status.value,
+        "case_name": job.case_name,
+        "parent_job_id": job.parent_job_id,
         "total_files": job.total_files,
         "processed_files": job.processed_files,
         "progress_percentage": round(progress_percentage, 2),
+        "current_stage": job.current_stage,
+        "processing_stages": job.processing_stages or {},
+        "artifacts": artifacts,  # NEW: Per-artifact status
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
         "error_message": job.error_message
@@ -1134,20 +1600,6 @@ async def chat_with_documents(
             user=current_user
         )
 
-        # print(f"SIMILARITY SEARCH RESULTS: {len(results)} chunks found")
-        # if results:
-        #     print(f"First result: {results[0]}")
-        # else:
-        #     print(f"NO RESULTS - Checking database...")
-        #     from sqlalchemy import func
-        #     chunk_count = db.query(func.count(models.DocumentChunk.id)).scalar()
-        # print(f"Total chunks in database: {chunk_count}")
-        # if doc_id_list:
-        #     doc_chunk_count = db.query(func.count(models.DocumentChunk.id)).filter(
-        #         models.DocumentChunk.document_id.in_(doc_id_list)
-        #     ).scalar()
-        # print(f"Chunks for selected docs {doc_id_list}: {doc_chunk_count}")
-
         context = "\n\n".join([r["chunk_text"][:800] for r in results[:5]])
         
         # ===== LOCAL DEV MODE: Use Gemini if configured =====
@@ -1210,7 +1662,7 @@ async def chat_with_documents(
             full_context = "\n\n".join(context_with_sources)
             
             # Create RAG prompt
-            prompt = f"""You are a helpful assistant analyzing documents. Based on the following document excerpts, answer the     user's question accurately and concisely.
+            prompt = f"""You are a helpful assistant analyzing documents. Based on the following document excerpts, answer the      user's question accurately and concisely.
 
 Document Excerpts:
 {full_context}

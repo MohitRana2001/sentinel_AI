@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     
     MAX_UPLOAD_FILES: int = int(os.getenv("MAX_UPLOAD_FILES", "10"))
     MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "4"))
-    ALLOWED_EXTENSIONS: str = os.getenv("ALLOWED_EXTENSIONS", ".pdf,.docx,.txt,.mp3,.wav,.mp4,.avi,.mov")
+    ALLOWED_EXTENSIONS: str = os.getenv("ALLOWED_EXTENSIONS", ".pdf,.docx,.txt,.mp3,.wav,.mp4,.avi,.mov,.csv,.xls,.xlsx")
     
     # Supported backends: 'gcs', 's3', 'local', 'azure' (future)
     STORAGE_BACKEND: str = os.getenv("STORAGE_BACKEND", "gcs")
@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     REDIS_QUEUE_AUDIO: str = "audio_queue"
     REDIS_QUEUE_VIDEO: str = "video_queue"
     REDIS_QUEUE_GRAPH: str = "graph_queue"
+    REDIS_QUEUE_CDR: str = "cdr_queue"  # NEW: CDR (Call Data Records) queue
     
     # AlloyDB Configuration
     ALLOYDB_HOST: str = os.getenv("ALLOYDB_HOST", "localhost")

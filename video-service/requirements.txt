@@ -1,0 +1,43 @@
+# Video Processing Dependencies
+opencv-python
+face-recognition
+numpy
+
+# Movie processing
+moviepy
+imageio
+imageio-ffmpeg
+
+# Text Processing
+langchain-text-splitters==0.3.11
+langchain-core
+
+# LLM Client
+ollama
+langchain-ollama==0.2.2
+
+# Database
+sqlalchemy
+psycopg2-binary
+pgvector
+
+# Redis
+redis==5.2.1
+hiredis==3.0.0
+
+# Storage
+google-cloud-storage==2.19.0
+google-auth==2.37.0
+
+# Config
+pydantic
+pydantic-settings
+python-dotenv
+
+# Utils
+python-dateutil
+Pillow
+
+# Translation and Language Detection
+dl-translate==0.3.0
+langid

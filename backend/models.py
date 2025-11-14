@@ -1,10 +1,42 @@
 from sqlalchemy import Column, String, Integer, DateTime, Text, JSON, ForeignKey, Enum as SQLEnum, Float, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy import TypeDecorator
 from datetime import datetime
 import enum
 from database import Base
 from pgvector.sqlalchemy import Vector
+import json as json_module
+
+# Database-agnostic JSON type (JSON for SQLite, JSONB for PostgreSQL)
+class JSONType(TypeDecorator):
+    """Platform-independent JSON type.
+    
+    Uses JSONB for PostgreSQL, JSON for SQLite and other databases.
+    """
+    impl = Text
+    cache_ok = True
+    
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            return dialect.type_descriptor(JSONB())
+        else:
+            return dialect.type_descriptor(JSON())
+    
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        if dialect.name != 'postgresql':
+            return json_module.dumps(value)
+        return value
+    
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        if dialect.name != 'postgresql':
+            if isinstance(value, str):
+                return json_module.loads(value)
+        return value
 
 
 class RBACLevel(str, enum.Enum):
@@ -65,12 +97,20 @@ class ProcessingJob(Base):
     
     status = Column(SQLEnum(JobStatus), default=JobStatus.QUEUED, nullable=False)
     
+    # Case Management - allows grouping and extending cases
+    case_name = Column(String, index=True, nullable=True)  # Case identifier to group related uploads
+    parent_job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=True)  # Reference to parent job if extending case
+    
     gcs_prefix = Column(String, nullable=False)
     
     original_filenames = Column(JSON)
     file_types = Column(JSON)  # Types of files (document/audio/video)
     total_files = Column(Integer, default=0)
     processed_files = Column(Integer, default=0)
+    
+    # Timing information for each processing stage
+    processing_stages = Column(JSON, default=dict)  # {"document_processing": 12.5, "graph_building": 8.3, ...}
+    current_stage = Column(String)  # Current processing stage
     
     started_at = Column(DateTime)
     completed_at = Column(DateTime)
@@ -81,6 +121,11 @@ class ProcessingJob(Base):
     
     user = relationship("User", back_populates="jobs", foreign_keys=[user_id])
     documents = relationship("Document", back_populates="job")
+    suspects = relationship("Suspect", back_populates="job", cascade="all, delete-orphan")
+    persons_of_interest = relationship("PersonOfInterest", back_populates="job")
+    
+    # Self-referential for case extensions
+    child_jobs = relationship("ProcessingJob", backref="parent_job", remote_side=[id], foreign_keys=[parent_job_id])
     
     def parse_job_id(self):
         """Parse job_id to extract manager_username, analyst_username, and job_uuid"""
@@ -115,6 +160,18 @@ class Document(Base):
     
     # Summary text (cached for quick access)
     summary_text = Column(Text)
+    
+    # Detected language (ISO 639-1 code: 'en', 'hi', 'bn', etc.)
+    detected_language = Column(String(10))
+    
+    # Per-artifact status and timing tracking
+    status = Column(SQLEnum(JobStatus), default=JobStatus.QUEUED, nullable=False)
+    processing_stages = Column(JSON, default=dict)  # {"extraction": 5.2, "summarization": 3.1, ...}
+    current_stage = Column(String)  # Current processing stage for this artifact
+    error_message = Column(Text)  # Error message specific to this artifact
+    
+    started_at = Column(DateTime)  # When processing started for this artifact
+    completed_at = Column(DateTime)  # When processing completed for this artifact
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -197,41 +254,169 @@ class ActivityLog(Base):
     details = Column(JSON)
     
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    
+
+
+# --- PERSON OF INTEREST MODELS ---
 
 EMBEDDING_GEMMA_DIM = 768 
-
-PHOTO_VECTOR_DIM = 1024 
+PHOTO_VECTOR_DIM = 128  # Face recognition embeddings are 128-dimensional 
 
 class PersonOfInterest(Base):
     __tablename__ = "person_of_interest"
 
     id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=True, index=True)  # Associate with upload job
     
+    # MANDATORY FIELDS
     name = Column(String, index=True, nullable=False)
+    phone_number = Column(String, nullable=False, index=True)  # MANDATORY: Phone number
+    photograph_base64 = Column(Text, nullable=False)  # MANDATORY: Photo
     
-    details = Column(JSONB, nullable=False)
-    
-    photograph_base64 = Column(Text, nullable=True)
-    
-    details_embedding = Column(Vector(EMBEDDING_GEMMA_DIM))
-    
-    photograph_embedding = Column(Vector(PHOTO_VECTOR_DIM))
+    # Stores arbitrary key-value pairs (e.g., "Names": [...], "Status": "Gangster", "Address": "...")
+    # This is for additional optional fields beyond the mandatory ones
+    # Uses JSONType for database compatibility (JSONB for PostgreSQL, JSON for SQLite)
+    details = Column(JSONType, nullable=False, default=dict)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Relationships
+    job = relationship("ProcessingJob", back_populates="persons_of_interest")
+    video_detections = relationship("VideoPOIDetection", back_populates="person_of_interest", cascade="all, delete-orphan")
+    cdr_matches = relationship("CDRPOIMatch", back_populates="person_of_interest", cascade="all, delete-orphan")
+
+class CDRRecord(Base):
+    """CDR (Call Data Records) stored as JSON/JSONB"""
+    __tablename__ = "cdr_records"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=False, index=True)
+    
+    # Original file information
+    original_filename = Column(String, nullable=False)
+    file_path = Column(String, nullable=False)  # GCS path to original file
+    
+    # CDR data in JSON/JSONB format (array of call records)
+    # Uses JSONType for database compatibility (JSONB for PostgreSQL, JSON for SQLite)
+    data = Column(JSONType, nullable=False)  # [{"caller": "...", "called": "...", "timestamp": "...", ...}, ...]
+    
+    # Metadata
+    record_count = Column(Integer, default=0)
+    
+    # Per-artifact status and timing tracking
+    status = Column(SQLEnum(JobStatus), default=JobStatus.QUEUED, nullable=False)
+    processing_stages = Column(JSON, default=dict)  # {"parsing": 5.2, "phone_matching": 3.1, ...}
+    current_stage = Column(String)  # Current processing stage for this artifact
+    error_message = Column(Text)  # Error message specific to this artifact
+    
+    started_at = Column(DateTime)  # When processing started for this artifact
+    completed_at = Column(DateTime)  # When processing completed for this artifact
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationship
+    job = relationship("ProcessingJob", backref="cdr_records")
+    
     __table_args__ = (
-        Index(
-            "ix_poi_details_embedding",
-            "details_embedding",
-            postgresql_using="ivfflat",
-            postgresql_with={"lists": 100}
-        ),
-        Index(
-            "ix_poi_photo_embedding",
-            "photograph_embedding",
-            postgresql_using="ivfflat",
-            postgresql_with={"lists": 100}
-        ),
+        Index("ix_cdr_job_id", "job_id"),
+    )
+
+
+class Suspect(Base):
+    """Suspect model - stores suspects associated with processing jobs"""
+    __tablename__ = "suspects"
+    
+    id = Column(String, primary_key=True, index=True)  # UUID
+    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=False, index=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    job = relationship("ProcessingJob", back_populates="suspects")
+    fields = relationship("SuspectField", back_populates="suspect", cascade="all, delete-orphan")
+
+
+class SuspectField(Base):
+    """Suspect field model - stores key-value pairs for suspect information"""
+    __tablename__ = "suspect_fields"
+    
+    id = Column(String, primary_key=True, index=True)  # UUID
+    suspect_id = Column(String, ForeignKey("suspects.id"), nullable=False, index=True)
+    
+    key = Column(String, nullable=False)  # e.g., "name", "age", "phone", "address"
+    value = Column(String, nullable=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    suspect = relationship("Suspect", back_populates="fields")
+
+
+# --- JOINT TABLES FOR POI LINKING ---
+
+class VideoPOIDetection(Base):
+    """Joint table linking videos to Person of Interest with frame information"""
+    __tablename__ = "video_poi_detections"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Foreign keys
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False, index=True)  # Video document
+    poi_id = Column(Integer, ForeignKey("person_of_interest.id"), nullable=False, index=True)
+    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=False, index=True)
+    
+    # Frame information (comma-separated list of frame numbers where POI was detected)
+    frames = Column(String, nullable=False)  # e.g., "15,42,89,127"
+    
+    # Detection metadata
+    confidence_scores = Column(JSON)  # Optional: store confidence scores per frame
+    detection_metadata = Column(JSON)  # Optional: additional detection information
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    video_document = relationship("Document", backref="poi_detections")
+    person_of_interest = relationship("PersonOfInterest", back_populates="video_detections")
+    job = relationship("ProcessingJob", backref="video_poi_detections")
+    
+    __table_args__ = (
+        Index("ix_video_poi_document_id", "document_id"),
+        Index("ix_video_poi_poi_id", "poi_id"),
+        Index("ix_video_poi_job_id", "job_id"),
+    )
+
+
+class CDRPOIMatch(Base):
+    """Joint table linking CDR records to Person of Interest based on phone number matches"""
+    __tablename__ = "cdr_poi_matches"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Foreign keys
+    poi_id = Column(Integer, ForeignKey("person_of_interest.id"), nullable=False, index=True)
+    job_id = Column(String, ForeignKey("processing_jobs.id"), nullable=False, index=True)
+    
+    # Matched phone number
+    phone_number = Column(String, nullable=False, index=True)
+    
+    # The specific CDR record that matched (stored as JSON/JSONB)
+    # Uses JSONType for database compatibility (JSONB for PostgreSQL, JSON for SQLite)
+    cdr_record_data = Column(JSONType, nullable=False)
+    
+    # Which field in the CDR matched (e.g., "caller", "called", "calling_number")
+    matched_field = Column(String, nullable=False)
+    
+    # Match metadata
+    match_timestamp = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    person_of_interest = relationship("PersonOfInterest", back_populates="cdr_matches")
+    job = relationship("ProcessingJob", backref="cdr_poi_matches")
+    
+    __table_args__ = (
+        Index("ix_cdr_poi_poi_id", "poi_id"),
+        Index("ix_cdr_poi_job_id", "job_id"),
+        Index("ix_cdr_poi_phone_number", "phone_number"),
     )

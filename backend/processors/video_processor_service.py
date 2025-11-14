@@ -74,8 +74,10 @@ class VideoProcessorService:
         job_id = message.get("job_id")
         gcs_path = message.get("gcs_path")
         filename = message.get("filename")
+        metadata = message.get("metadata", {})
+        language = metadata.get("language", None)
         
-        print(f"🎬 Video Processor received file: {filename} (job: {job_id})")
+        print(f"Video Processor received file: {filename} (job: {job_id}, language: {language})")
         
         db = SessionLocal()
         try:
@@ -85,7 +87,7 @@ class VideoProcessorService:
             ).first()
             
             if not job:
-                print(f"❌ Job {job_id} not found")
+                print(f"Job {job_id} not found")
                 return
             
             # Update job status to PROCESSING if it's still QUEUED
@@ -102,19 +104,19 @@ class VideoProcessorService:
             
             if existing_doc and existing_doc.summary_path:
                 # File already processed by another worker
-                print(f"⏭️  File {filename} already processed by another worker, skipping")
+                print(f"File {filename} already processed by another worker, skipping")
                 return
             
             # Process this file
-            self.process_video(db, job, gcs_path)
+            self.process_video(db, job, gcs_path, language)
             
             # Check if all files in the job have been processed
             self._check_job_completion(db, job)
             
-            print(f"✅ Completed processing: {filename}")
+            print(f"Completed processing: {filename}")
             
         except Exception as e:
-            print(f"❌ Error processing file {filename}: {e}")
+            print(f"Error processing file {filename}: {e}")
             traceback.print_exc()
             # Don't mark job as failed for single file errors
         finally:
@@ -127,7 +129,7 @@ class VideoProcessorService:
         job_id = message.get("job_id")
         gcs_prefix = message.get("gcs_prefix")
         
-        print(f"🎬 Video Processor received job (legacy): {job_id}")
+        print(f"Video Processor received job (legacy): {job_id}")
         
         db = SessionLocal()
         try:
@@ -155,7 +157,7 @@ class VideoProcessorService:
                     print(f"Error processing {file_path}: {e}")
                     traceback.print_exc()
             
-            print(f"✅ Video processing completed for job {job_id}")
+            print(f"Video processing completed for job {job_id}")
             
             # Check if all files have been processed
             self._check_job_completion(db, job)
@@ -168,29 +170,37 @@ class VideoProcessorService:
     
     def _check_job_completion(self, db, job):
         """
-        Check if all files in the job have been processed
-        If yes, mark job as completed
+        Check if all files in the job have completed GRAPH PROCESSING.
+        Documents must have status COMPLETED (set by graph processor), not just created.
+        This ensures we don't mark the job complete until graphs are built.
         """
-        # Count documents created for this job
-        documents_processed = db.query(models.Document).filter(
+        # Count COMPLETED documents (graph processing done)
+        completed_documents = db.query(models.Document).filter(
+            models.Document.job_id == job.id,
+            models.Document.status == models.JobStatus.COMPLETED  # Only fully completed docs
+        ).count()
+        
+        # Count total documents created
+        total_documents = db.query(models.Document).filter(
             models.Document.job_id == job.id
         ).count()
         
-        print(f"📊 Job {job.id}: {documents_processed}/{job.total_files} files processed")
+        print(f"Job {job.id}: {completed_documents}/{job.total_files} files COMPLETED (with graphs), {total_documents} total documents")
         
-        # Only mark as completed if all files are done
-        if documents_processed >= job.total_files:
+        # Only mark job as completed if ALL files have completed graph processing
+        if completed_documents >= job.total_files:
             if job.status != models.JobStatus.COMPLETED:
                 job.status = models.JobStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
                 db.commit()
-                print(f"✅ Job {job.id} marked as COMPLETED")
-        elif documents_processed > 0:
-            # Some files processed, ensure status is PROCESSING
+                print(f"Job {job.id} marked as COMPLETED (all files + graphs done)")
+        elif total_documents > 0:
+            # Some files processed but not all graphs built yet, ensure status is PROCESSING
             if job.status == models.JobStatus.QUEUED:
                 job.status = models.JobStatus.PROCESSING
                 job.started_at = job.started_at or datetime.now(timezone.utc)
                 db.commit()
+                print(f"Job {job.id} status set to PROCESSING ({total_documents} files processing, awaiting graph completion)")
     
     def format_timedelta(self, td):
         """
@@ -211,7 +221,7 @@ class VideoProcessorService:
         Extract frames from video at specified rate
         Returns list of frame file paths
         """
-        print(f"🎞️  Extracting frames from video...")
+        print(f"Extracting frames from video...")
         
         # Load the video clip
         video_clip = VideoFileClip(video_file_path)
@@ -240,7 +250,7 @@ class VideoProcessorService:
         
         video_clip.close()
         
-        print(f"✅ Extracted {len(frame_paths)} frames from video")
+        print(f"Extracted {len(frame_paths)} frames from video")
         return frame_paths
     
     def analyze_video_frames(self, frame_folder_path: str) -> str:
@@ -248,17 +258,17 @@ class VideoProcessorService:
         Analyze video frames using vision LLM
         Returns comprehensive analysis of the video content
         """
-        print(f"🔍 Analyzing video frames with vision LLM...")
+        print(f"Analyzing video frames with vision LLM...")
         
         # Prepare image content for LangChain
         chat_content = []
         images = sorted(glob.glob(f"{frame_folder_path}/*.jpg"))
         
         if not images:
-            print(f"⚠️ No frames found in {frame_folder_path}")
+            print(f"No frames found in {frame_folder_path}")
             return "No frames available for analysis"
         
-        print(f"📷 Processing {len(images)} frames...")
+        print(f"Processing {len(images)} frames...")
         
         # Encode all frames as base64 images
         for image_path in images:
@@ -292,11 +302,11 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         response = chain_with_multiple_images.invoke({})
         
         analysis = response.content
-        print(f"✅ Video analysis completed: {len(analysis)} characters")
+        print(f"Video analysis completed: {len(analysis)} characters")
         
         return analysis
     
-    def process_video(self, db, job, gcs_path: str):
+    def process_video(self, db, job, gcs_path: str, language: str = None):
         """
         Process a single video file
         
@@ -304,15 +314,53 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         1. Download video from GCS
         2. Extract frames at 0.3 fps (1 frame every ~3 seconds)
         3. Analyze frames using vision LLM
-        4. Detect language and translate if Hindi
+        4. Detect language and translate if non-English
         5. Save analysis and translation to GCS
         6. Generate summary
-        7. Create document record
+        7. Create document record with PROCESSING status
+        8. Queue for graph processing (status will be updated by graph processor)
         """
-        print(f"🔄 Processing video: {gcs_path}")
+        print(f"Processing video: {gcs_path}")
         
         filename = os.path.basename(gcs_path)
-        is_hindi = 'hindi' in filename.lower()
+        
+        # Determine if translation is needed
+        if language:
+            needs_translation = language.lower() != 'en' and language.lower() != 'english'
+            source_language = language
+        
+        artifact_start_time = datetime.now(timezone.utc)
+        stage_times = {}
+        
+        # Check if document record already exists
+        doc_record = db.query(models.Document).filter(
+            models.Document.job_id == job.id,
+            models.Document.original_filename == filename
+        ).first()
+        
+        if not doc_record:
+            doc_record = models.Document(
+                job_id=job.id,
+                original_filename=filename,
+                file_type=models.FileType.VIDEO,
+                gcs_path=gcs_path,
+                status=models.JobStatus.PROCESSING,
+                started_at=artifact_start_time,
+                current_stage="starting",
+                processing_stages={}
+            )
+            db.add(doc_record)
+            db.commit()
+            db.refresh(doc_record)
+        
+        # Publish artifact status: PROCESSING
+        redis_pubsub.publish_artifact_status(
+            job_id=job.id,
+            filename=filename,
+            status="processing",
+            current_stage="starting",
+            file_type="video"
+        )
         
         # Download video file to temp
         suffix = os.path.splitext(gcs_path)[1]
@@ -323,67 +371,187 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         
         try:
             # Step 1: Extract frames from video
+            frame_extraction_start = datetime.now(timezone.utc)
+            doc_record.current_stage = "frame_extraction"
+            db.commit()
+            redis_pubsub.publish_artifact_status(
+                job_id=job.id,
+                filename=filename,
+                status="processing",
+                current_stage="frame_extraction",
+                file_type="video"
+            )
+            
             frame_paths = self.extract_frames(temp_video_file, temp_frames_dir)
             
+            frame_extraction_end = datetime.now(timezone.utc)
+            stage_times['frame_extraction'] = (frame_extraction_end - frame_extraction_start).total_seconds()
+            
+            # Step 1.5: Face Recognition (POI Detection)
+            face_recognition_start = datetime.now(timezone.utc)
+            doc_record.current_stage = "face_recognition"
+            doc_record.processing_stages = stage_times
+            db.commit()
+            redis_pubsub.publish_artifact_status(
+                job_id=job.id,
+                filename=filename,
+                status="processing",
+                current_stage="face_recognition",
+                processing_stages=stage_times,
+                file_type="video"
+            )
+            
+            print(f"Starting face recognition for POI detection...")
+            try:
+                from face_recognition_processor import face_recognition_processor
+                
+                # Load POI faces for THIS JOB ONLY
+                poi_encodings, poi_metadata = face_recognition_processor.load_poi_faces(db, job_id=job.id)
+                
+                if poi_encodings:
+                    print(f"✅ Loaded {len(poi_encodings)} POI face encoding(s) for job {job.id}")
+                    # Process video for face detections
+                    detections = face_recognition_processor.process_video_for_faces(
+                        temp_video_file,
+                        poi_encodings,
+                        poi_metadata
+                    )
+                    
+                    # Save detection records to database
+                    if detections:
+                        face_recognition_processor.create_video_poi_detections(db, doc_record.id, detections)
+                        print(f"Face recognition completed: {len(detections)} POI detection(s)")
+                    else:
+                        print(f"No POI matches found in video")
+                else:
+                    print(f"⚠️ No POIs found for job {job.id} - skipping face recognition")
+                    print(f"No POIs in database, skipping face recognition")
+                    
+            except Exception as e:
+                print(f"Face recognition failed (non-critical): {e}")
+                import traceback
+                traceback.print_exc()
+            
+            face_recognition_end = datetime.now(timezone.utc)
+            stage_times['face_recognition'] = (face_recognition_end - face_recognition_start).total_seconds()
+            
             # Step 2: Analyze frames using vision LLM
+            analysis_start = datetime.now(timezone.utc)
+            doc_record.current_stage = "video_analysis"
+            doc_record.processing_stages = stage_times
+            db.commit()
+            redis_pubsub.publish_artifact_status(
+                job_id=job.id,
+                filename=filename,
+                status="processing",
+                current_stage="video_analysis",
+                processing_stages=stage_times,
+                file_type="video"
+            )
+            
             analysis = self.analyze_video_frames(temp_frames_dir)
             
             if not analysis or not analysis.strip():
                 analysis = "[ No analysis available ]"
-                print(f"⚠️ Empty analysis for {filename}")
+                print(f"Empty analysis for {filename}")
+            
+            analysis_end = datetime.now(timezone.utc)
+            stage_times['video_analysis'] = (analysis_end - analysis_start).total_seconds()
             
             # Determine naming convention based on translation
             # == (two equal signs) for analysis + summary
             # === (three equal signs) for analysis + summary + translation
-            equal_prefix = "===" if is_hindi else "=="
+            equal_prefix = "===" if needs_translation else "=="
             
             # Save analysis to GCS with naming convention
             analysis_path = gcs_path + f'{equal_prefix}analysis.txt'
             storage_manager.upload_text(analysis, analysis_path)
-            print(f"✅ Analysis saved: {len(analysis)} characters")
+            print(f"Analysis saved: {len(analysis)} characters")
             
-            # Step 3: Translation (if Hindi)
+            # Step 3: Translation (if non-English)
             translated_text_path = None
             final_text = analysis
             
-            if is_hindi and analysis != "[ No analysis available ]":
-                print(f"🌐 Translating analysis from Hindi...")
+            if needs_translation and analysis != "[ No analysis available ]":
+                translation_start = datetime.now(timezone.utc)
+                doc_record.current_stage = "translation"
+                doc_record.processing_stages = stage_times
+                db.commit()
+                redis_pubsub.publish_artifact_status(
+                    job_id=job.id,
+                    filename=filename,
+                    status="processing",
+                    current_stage="translation",
+                    processing_stages=stage_times,
+                    file_type="video"
+                )
+                
+                print(f"Translating analysis from {source_language} to English...")
                 try:
-                    from document_processor import translate
+                    import dl_translate as dlt
+                    from langchain_text_splitters import RecursiveCharacterTextSplitter
                     
-                    # Save analysis to temp file for translation
-                    temp_trans = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8')
-                    temp_trans.write(analysis)
-                    temp_trans.close()
+                    # Initialize translation model
+                    mt = dlt.TranslationModel("./dlt/cached_model_m2m100", model_family="m2m100")
                     
-                    # Translate
-                    temp_dir = os.path.dirname(temp_trans.name)
-                    translated_path = translate(temp_dir, temp_trans.name)
+                    # Split text into chunks for translation
+                    text_splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=1000,
+                        chunk_overlap=0
+                    )
+                    chunks = text_splitter.split_text(analysis)
                     
-                    # Read translation
-                    with open(translated_path, 'r', encoding='utf-8') as f:
-                        final_text = f.read()
+                    print(f"Translating {len(chunks)} text chunks from {source_language} to English...")
                     
-                    # Upload to GCS with three-equal-sign naming
+                    # Translate each chunk
+                    translated_chunks = mt.translate(
+                        chunks, 
+                        source=source_language, 
+                        target='en', 
+                        verbose=True, 
+                        batch_size=1
+                    )
+                    
+                    # Join translated chunks
+                    final_text = " ".join(translated_chunks)
+                    
+                    # Upload to storage with three-equal-sign naming
                     translated_text_path = gcs_path + f'{equal_prefix}translated.txt'
                     storage_manager.upload_text(final_text, translated_text_path)
                     
-                    # Cleanup
-                    os.unlink(temp_trans.name)
-                    os.unlink(translated_path)
-                    
-                    print(f"✅ Translation completed: {len(final_text)} characters")
+                    print(f"Translation completed: {len(final_text)} characters")
                 except Exception as e:
-                    print(f"⚠️ Translation failed: {e}")
+                    print(f"Translation failed: {e}")
+                    import traceback
+                    traceback.print_exc()
                     # Continue without translation
+                
+                translation_end = datetime.now(timezone.utc)
+                stage_times['translation'] = (translation_end - translation_start).total_seconds()
             
             # Step 4: Summarization
-            print(f"📝 Generating summary...")
+            summarization_start = datetime.now(timezone.utc)
+            doc_record.current_stage = "summarization"
+            doc_record.processing_stages = stage_times
+            db.commit()
+            redis_pubsub.publish_artifact_status(
+                job_id=job.id,
+                filename=filename,
+                status="processing",
+                current_stage="summarization",
+                processing_stages=stage_times,
+                file_type="video"
+            )
+            
+            print(f"Generating summary...")
             summary = self.generate_summary(final_text)
             
             # Save summary to GCS with naming convention
             summary_path = gcs_path + f'{equal_prefix}summary.txt'
             storage_manager.upload_text(summary, summary_path)
+            
+            summarization_end = datetime.now(timezone.utc)
+            stage_times['summarization'] = (summarization_end - summarization_start).total_seconds()
             
         finally:
             # Cleanup temp files
@@ -392,51 +560,78 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             if os.path.exists(temp_frames_dir):
                 shutil.rmtree(temp_frames_dir)
         
-        # Step 5: Create document record
-        document = models.Document(
-            job_id=job.id,
-            original_filename=filename,
-            file_type=models.FileType.VIDEO,
-            gcs_path=gcs_path,
-            transcription_path=analysis_path,  # Store analysis in transcription_path
-            translated_text_path=translated_text_path,
-            summary_path=summary_path,
-            summary_text=summary[:1000] if summary else ""
-        )
-        db.add(document)
+        # Step 5: Update document record with paths and detected language
+        doc_record.transcription_path = analysis_path  # Store analysis in transcription_path
+        doc_record.translated_text_path = translated_text_path
+        doc_record.summary_path = summary_path
+        doc_record.summary_text = summary[:1000] if summary else ""
+        doc_record.detected_language = language if language else 'en'  # Store detected/selected language
         db.commit()
-        db.refresh(document)
+        db.refresh(doc_record)
+        print(f"Document record updated with language: {doc_record.detected_language}")
         
         # Step 6: Vectorize the text
-        print(f"🔢 Creating embeddings from video analysis...")
+        vectorization_start = datetime.now(timezone.utc)
+        doc_record.current_stage = "vectorization"
+        doc_record.processing_stages = stage_times
+        db.commit()
+        redis_pubsub.publish_artifact_status(
+            job_id=job.id,
+            filename=filename,
+            status="processing",
+            current_stage="vectorization",
+            processing_stages=stage_times,
+            file_type="video"
+        )
+        
+        print(f"Creating embeddings from video analysis...")
         try:
             from vector_store import vectorise_and_store_alloydb
             # Delete existing chunks for this document
             db.query(models.DocumentChunk).filter(
-                models.DocumentChunk.document_id == document.id
+                models.DocumentChunk.document_id == doc_record.id
             ).delete(synchronize_session=False)
             db.commit()
             # Vectorize the final text (translated if Hindi, original if English)
-            vectorise_and_store_alloydb(db, document.id, final_text, summary)
-            print(f"✅ Embeddings created for video analysis")
+            vectorise_and_store_alloydb(db, doc_record.id, final_text, summary)
+            print(f"Embeddings created for video analysis")
         except Exception as e:
-            print(f"⚠️ Vectorization failed: {e}")
+            print(f"Vectorization failed: {e}")
+        
+        vectorization_end = datetime.now(timezone.utc)
+        stage_times['vectorization'] = (vectorization_end - vectorization_start).total_seconds()
+        
+        # Update processing stages but keep status as PROCESSING (will be updated by graph processor)
+        doc_record.current_stage = "awaiting_graph"
+        doc_record.processing_stages = stage_times
+        db.commit()
+        
+        # Publish status: still processing, awaiting graph
+        redis_pubsub.publish_artifact_status(
+            job_id=job.id,
+            filename=filename,
+            status="processing",
+            current_stage="awaiting_graph",
+            processing_stages=stage_times,
+            file_type="video"
+        )
         
         # Step 7: Push to graph processor queue
         print(f"📊 Queuing for graph processing...")
         username = job.user.username if job.user else "unknown"
         redis_pubsub.push_to_queue(settings.REDIS_QUEUE_GRAPH, {
             "job_id": job.id,
-            "document_id": document.id,
+            "document_id": doc_record.id,
             "gcs_text_path": translated_text_path or analysis_path,
-            "username": username
+            "username": username,
+            "filename": filename  # Add filename for status tracking
         })
         
         # Update job progress
         job.processed_files += 1
         db.commit()
         
-        print(f"✅ Completed processing: {filename}")
+        print(f"Completed video processing (awaiting graph): {filename}")
     
     def generate_summary(self, text: str) -> str:
         """
@@ -448,15 +643,15 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
         # ===== LOCAL DEV MODE: Use Gemini if configured =====
         try:
             if settings.USE_GEMINI_FOR_DEV and settings.GEMINI_API_KEY:
-                print(f"🔷 Using Gemini API for summarization (LOCAL DEV MODE)")
+                print(f"Using Gemini API for summarization (LOCAL DEV MODE)")
                 from gemini_client import gemini_client
                 summary = gemini_client.generate_summary(text, max_words=200)
-                print(f"✅ Gemini summary generated")
+                print(f"Gemini summary generated")
                 return summary
         except (ImportError, AttributeError) as e:
-            print(f"⚠️ Gemini not configured for summary: {e}")
+            print(f"Gemini not configured for summary: {e}")
         except Exception as e:
-            print(f"⚠️ Gemini summary error: {e}")
+            print(f"Gemini summary error: {e}")
         
         # ===== PRODUCTION MODE: Use local LLM =====
         print(f"🔧 Using local LLM for summarization (PRODUCTION MODE)")
@@ -476,16 +671,16 @@ Summary:"""
             )
             return response['message']['content'].strip()
         except Exception as e:
-            print(f"⚠️ Summary generation error: {e}")
+            print(f"Summary generation error: {e}")
             return "Summary generation failed"
 
 
 def main():
     """Main entry point"""
-    print("🚀 Starting Video Processor Service...")
-    print(f"📡 Using Redis Queue for parallel processing")
-    print(f"🎬 Frame extraction rate: {SAVING_FRAMES_PER_SECOND} fps (1 frame every ~{1/SAVING_FRAMES_PER_SECOND:.1f} seconds)")
-    print(f"👂 Listening to queue: {settings.REDIS_QUEUE_VIDEO}")
+    print("Starting Video Processor Service...")
+    print(f"Using Redis Queue for parallel processing")
+    print(f"Frame extraction rate: {SAVING_FRAMES_PER_SECOND} fps (1 frame every ~{1/SAVING_FRAMES_PER_SECOND:.1f} seconds)")
+    print(f"Listening to queue: {settings.REDIS_QUEUE_VIDEO}")
     
     service = VideoProcessorService()
     

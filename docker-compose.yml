@@ -214,6 +214,27 @@ services:
       - sentinel-network
     command: python processors/graph_processor_service.py
 
+  # CDR Processor Service
+  cdr-processor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.cdr_processor
+    container_name: sentinel-cdr-processor
+    environment:
+      REDIS_HOST: redis
+      ALLOYDB_HOST: alloydb
+      ALLOYDB_PASSWORD: password
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME:-sentinel-local}
+    volumes:
+      - ./backend:/app
+      - ./credentials:/app/credentials
+    depends_on:
+      - redis
+      - alloydb
+    networks:
+      - sentinel-network
+    command: python processors/cdr_processor_service.py
+
   # Frontend (Next.js)
   frontend:
     build:

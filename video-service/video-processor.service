@@ -1,0 +1,45 @@
+[Unit]
+Description=Video Processor Service - Sentinel AI
+After=network.target redis.target postgresql.target
+Wants=redis.target postgresql.target
+
+[Service]
+Type=simple
+User=sentinelai
+Group=sentinelai
+WorkingDirectory=/opt/sentinel-ai/video-service
+Environment="PATH=/opt/sentinel-ai/video-service/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/opt/sentinel-ai:/opt/sentinel-ai/video-service"
+
+# Load environment variables from .env file
+EnvironmentFile=/opt/sentinel-ai/.env
+
+ExecStart=/opt/sentinel-ai/video-service/venv/bin/python video_processor_service.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitBurst=5
+StartLimitInterval=100
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=video-processor
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/sentinel-ai/video-service /tmp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Resource limits
+MemoryMax=8G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

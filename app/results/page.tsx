@@ -2,10 +2,14 @@
 import { useAuth } from "@/context/auth-context";
 import { Header } from "@/components/common/header";
 import { ResultsContainer } from "@/components/results/results-container";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { apiClient } from "@/lib/api-client";
 import type { AnalysisResult, DocumentResult } from "@/types";
+import { FolderOpen, ExternalLink } from "lucide-react";
+import Link from "next/link";
 
 export default function ResultsPage() {
   const { isAuthenticated } = useAuth();
@@ -16,6 +20,8 @@ export default function ResultsPage() {
   const [jobResults, setJobResults] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [jobInfo, setJobInfo] = useState<any>(null);
+  const [caseJobs, setCaseJobs] = useState<any[]>([]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -36,6 +42,21 @@ export default function ResultsPage() {
 
     try {
       setLoading(true);
+      
+      // Load job info first to get case name
+      const jobStatus = await apiClient.getJobStatus(jobId);
+      setJobInfo(jobStatus);
+      
+      // If job has a case name, load other jobs in the same case
+      if (jobStatus.case_name) {
+        try {
+          const caseData = await apiClient.getCaseJobs(jobStatus.case_name);
+          setCaseJobs(caseData.jobs || []);
+        } catch (err) {
+          console.error("Failed to load case jobs:", err);
+        }
+      }
+      
       const results = await apiClient.getJobResults(jobId);
 
       if (results.documents.length === 0) {
@@ -145,13 +166,41 @@ export default function ResultsPage() {
   return (
     <>
       <Header />
-      {jobResults && (
-        <ResultsContainer
-          result={jobResults}
-          onReset={handleReset}
-          jobId={jobResults.jobId}
-        />
-      )}
+      <div className="container mx-auto p-6 space-y-6">
+        {/* Case Context Card */}
+        {jobInfo?.case_name && (
+          <Card className="bg-blue-50 border-blue-200">
+            <CardHeader>
+              <CardTitle className="text-sm flex items-center gap-2">
+                <FolderOpen className="h-4 w-4 text-blue-600" />
+                Case: {jobInfo.case_name}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div className="text-sm">
+                  <span className="text-gray-600">Total uploads in case:</span>
+                  <span className="ml-2 font-semibold">{caseJobs.length || 0}</span>
+                </div>
+                <Button variant="outline" size="sm" asChild>
+                  <Link href={`/cases/${encodeURIComponent(jobInfo.case_name)}`}>
+                    View All Case Files
+                    <ExternalLink className="ml-2 h-3 w-3" />
+                  </Link>
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {jobResults && (
+          <ResultsContainer
+            result={jobResults}
+            onReset={handleReset}
+            jobId={jobResults.jobId}
+          />
+        )}
+      </div>
     </>
   );
 }

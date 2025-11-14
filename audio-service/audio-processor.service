@@ -1,0 +1,45 @@
+[Unit]
+Description=Audio Processor Service - Sentinel AI
+After=network.target redis.target postgresql.target
+Wants=redis.target postgresql.target
+
+[Service]
+Type=simple
+User=sentinelai
+Group=sentinelai
+WorkingDirectory=/opt/sentinel-ai/audio-service
+Environment="PATH=/opt/sentinel-ai/audio-service/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/opt/sentinel-ai:/opt/sentinel-ai/audio-service"
+
+# Load environment variables from .env file
+EnvironmentFile=/opt/sentinel-ai/.env
+
+ExecStart=/opt/sentinel-ai/audio-service/venv/bin/python audio_processor.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitBurst=5
+StartLimitInterval=100
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=audio-processor
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/sentinel-ai/audio-service /tmp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Resource limits
+MemoryMax=8G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

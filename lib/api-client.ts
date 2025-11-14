@@ -13,9 +13,12 @@ interface JobStatus {
   total_files: number
   processed_files: number
   progress_percentage: number
+  current_stage: string | null
+  processing_stages: Record<string, number>
   started_at: string | null
   completed_at: string | null
   error_message: string | null
+  case_name?: string | null
 }
 
 interface JobResults {
@@ -28,6 +31,16 @@ interface JobResults {
     file_type: string
     summary: string | null
     created_at: string
+  }>
+  suspects: Array<{
+    id: string
+    fields: Array<{
+      id: string
+      key: string
+      value: string
+    }>
+    created_at: string
+    updated_at: string
   }>
 }
 
@@ -64,6 +77,40 @@ interface ChatResponse {
   }>
 }
 
+// Person of Interest interfaces
+interface PersonOfInterest {
+  id?: number
+  name: string
+  phone_number: string
+  photograph_base64: string
+  details: Record<string, any>
+  created_at?: string
+  updated_at?: string
+}
+
+interface PersonOfInterestCreate {
+  name: string
+  phone_number: string
+  photograph_base64: string
+  details: Record<string, any>
+}
+
+interface PersonOfInterestUpdate {
+  name?: string
+  phone_number?: string
+  photograph_base64?: string
+  details?: Record<string, any>
+}
+
+interface PersonOfInterestImport {
+  persons: PersonOfInterestCreate[]
+}
+
+interface PersonOfInterestListResponse {
+  total: number
+  persons: PersonOfInterest[]
+}
+
 class ApiClient {
   private baseUrl: string
 
@@ -86,11 +133,37 @@ class ApiClient {
     return {}
   }
 
-  async uploadDocuments(files: File[]): Promise<UploadResponse> {
+  async uploadDocuments(
+    files: File[], 
+    options?: {
+      mediaTypes?: string[]
+      languages?: string[]
+      suspects?: string
+      caseName?: string
+      parentJobId?: string
+    }
+  ): Promise<UploadResponse> {
     const formData = new FormData()
     files.forEach((file) => {
       formData.append("files", file)
     })
+    
+    // Add optional metadata
+    if (options?.mediaTypes) {
+      options.mediaTypes.forEach(type => formData.append("media_types", type))
+    }
+    if (options?.languages) {
+      options.languages.forEach(lang => formData.append("languages", lang))
+    }
+    if (options?.suspects) {
+      formData.append("suspects", options.suspects)
+    }
+    if (options?.caseName) {
+      formData.append("case_name", options.caseName)
+    }
+    if (options?.parentJobId) {
+      formData.append("parent_job_id", options.parentJobId)
+    }
 
     const response = await fetch(`${this.baseUrl}/upload`, {
       method: "POST",
@@ -101,6 +174,30 @@ class ApiClient {
     if (!response.ok) {
       const error = await response.json().catch(() => ({ detail: "Upload failed" }))
       throw new Error(error.detail || "Upload failed")
+    }
+
+    return response.json()
+  }
+  
+  async getCases(): Promise<{ cases: string[] }> {
+    const response = await fetch(`${this.baseUrl}/cases`, {
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch cases")
+    }
+
+    return response.json()
+  }
+  
+  async getCaseJobs(caseName: string): Promise<any> {
+    const response = await fetch(`${this.baseUrl}/cases/${encodeURIComponent(caseName)}/jobs`, {
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch case jobs")
     }
 
     return response.json()
@@ -119,7 +216,8 @@ class ApiClient {
   }
 
   async getJobResults(jobId: string): Promise<JobResults> {
-    const response = await fetch(`${this.baseUrl}/jobs/${jobId}/results`, {
+    const encodedJobId = encodeURIComponent(jobId);
+    const response = await fetch(`${this.baseUrl}/jobs/${encodedJobId}/results`, {
       headers: this.getAuthHeaders(),
     })
 
@@ -515,6 +613,157 @@ class ApiClient {
 
     return response.json()
   }
+
+  // ==========================================
+  // Person of Interest API Methods
+  // ==========================================
+
+  /**
+   * Create a new Person of Interest
+   */
+  async createPOI(poi: PersonOfInterestCreate): Promise<{ id: number; name: string; message: string }> {
+    const response = await fetch(`${this.baseUrl}/person-of-interest`, {
+      method: "POST",
+      headers: {
+        ...this.getAuthHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(poi),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || "Failed to create Person of Interest")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Import multiple Persons of Interest
+   */
+  async importPOIs(import_data: PersonOfInterestImport): Promise<{
+    success: number
+    created: string[]
+    errors: string[]
+    message: string
+  }> {
+    const response = await fetch(`${this.baseUrl}/person-of-interest/import`, {
+      method: "POST",
+      headers: {
+        ...this.getAuthHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(import_data),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || "Failed to import Persons of Interest")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Get all Persons of Interest
+   */
+  async getPOIs(skip: number = 0, limit: number = 100): Promise<PersonOfInterestListResponse> {
+    const response = await fetch(
+      `${this.baseUrl}/person-of-interest?skip=${skip}&limit=${limit}`,
+      {
+        headers: this.getAuthHeaders(),
+      }
+    )
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch Persons of Interest")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Get a specific Person of Interest by ID
+   */
+  async getPOI(poiId: number): Promise<PersonOfInterest> {
+    const response = await fetch(`${this.baseUrl}/person-of-interest/${poiId}`, {
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || "Person of Interest not found")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Update a Person of Interest
+   */
+  async updatePOI(poiId: number, updates: PersonOfInterestUpdate): Promise<{ id: number; name: string; message: string }> {
+    const response = await fetch(`${this.baseUrl}/person-of-interest/${poiId}`, {
+      method: "PUT",
+      headers: {
+        ...this.getAuthHeaders(),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(updates),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || "Failed to update Person of Interest")
+    }
+
+    return response.json()
+  }
+
+  /**
+   * Delete a Person of Interest
+   */
+  async deletePOI(poiId: number): Promise<{ message: string }> {
+    const response = await fetch(`${this.baseUrl}/person-of-interest/${poiId}`, {
+      method: "DELETE",
+      headers: this.getAuthHeaders(),
+    })
+
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.detail || "Failed to delete Person of Interest")
+    }
+
+    return response.json()
+  }
+
+  // POI namespace for organized access
+  poi = {
+    create: async (poi: PersonOfInterestCreate): Promise<{ id: number; name: string; message: string }> => {
+      return this.createPOI(poi)
+    },
+    getAll: async (skip: number = 0, limit: number = 100): Promise<PersonOfInterest[]> => {
+      const response = await this.getPOIs(skip, limit)
+      return response.persons
+    },
+    getById: async (poiId: number): Promise<PersonOfInterest> => {
+      return this.getPOI(poiId)
+    },
+    update: async (poiId: number, updates: PersonOfInterestUpdate): Promise<{ id: number; name: string; message: string }> => {
+      return this.updatePOI(poiId, updates)
+    },
+    delete: async (poiId: number): Promise<{ message: string }> => {
+      return this.deletePOI(poiId)
+    },
+    importBulk: async (persons: PersonOfInterestCreate[]): Promise<{
+      success: number
+      created: string[]
+      errors: string[]
+      message: string
+    }> => {
+      return this.importPOIs({ persons })
+    }
+  }
 }
 
 // Export singleton instance
@@ -528,4 +777,9 @@ export type {
   DocumentContent,
   GraphData,
   ChatResponse,
+  PersonOfInterest,
+  PersonOfInterestCreate,
+  PersonOfInterestUpdate,
+  PersonOfInterestImport,
+  PersonOfInterestListResponse,
 }

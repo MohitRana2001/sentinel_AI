@@ -40,6 +40,7 @@ from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
 from langchain_ollama import OllamaEmbeddings
 from langchain_postgres import PGVector
 from insert_pgvector import insert_pgvector
+from document_converter import convert_to_pdf  # Import unified converter
 
 try:
     from config import settings
@@ -81,9 +82,38 @@ TESSERACT_TO_DL_TRANSLATE = {
 
 
 def process_document_with_docling(input_path: str, lang: list = None) -> Tuple[str, Dict[str, Any], str]:
+    """
+    Process a document with Docling OCR and conversion.
+    Automatically converts non-PDF documents (TXT, MD, DOC, DOCX) to PDF before processing.
+    
+    Args:
+        input_path: Path to input document (PDF, TXT, MD, DOC, DOCX)
+        lang: List of OCR languages
+    
+    Returns:
+        Tuple of (markdown_text, json_dict, detected_language)
+    """
     
     if lang is None:
         lang = ['eng', 'hin', 'ben', 'pan', 'guj', 'kan', 'mal', 'mar', 'tam', 'tel', 'chi_sim']
+    
+    # Convert to PDF if needed
+    original_path = input_path
+    _, ext = os.path.splitext(input_path.lower())
+    
+    if ext in ['.txt', '.md', '.doc', '.docx']:
+        print(f"Converting {ext} document to PDF before processing: {input_path}")
+        try:
+            pdf_path = convert_to_pdf(input_path)
+            if pdf_path:
+                input_path = pdf_path
+                print(f"Successfully converted to PDF: {pdf_path}")
+            else:
+                print(f"Warning: Failed to convert to PDF, processing original: {original_path}")
+                input_path = original_path
+        except Exception as e:
+            print(f"Warning: PDF conversion failed ({e}), processing original: {original_path}")
+            input_path = original_path
     
     # Ensure TESSDATA_PREFIX is set
     if not os.environ.get('TESSDATA_PREFIX'):

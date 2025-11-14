@@ -667,9 +667,18 @@ async def create_person_of_interest(
         print(f"Error generating text embedding: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate text embedding: {str(e)}")
 
-    # TODO: Generate photo embedding when face recognition is implemented
-    # For now, set to None or a placeholder
+    # Generate photo embedding using face recognition
     photograph_embedding = None
+    try:
+        from photo_embedding import generate_photo_embedding
+        photograph_embedding = generate_photo_embedding(poi_in.photograph_base64)
+        if photograph_embedding:
+            print(f"✅ Generated photo embedding with {len(photograph_embedding)} dimensions")
+        else:
+            print("⚠️ No face detected in photograph, photo embedding will be None")
+    except Exception as e:
+        print(f"⚠️ Error generating photo embedding: {e}")
+        # Continue without photo embedding - it's optional
     
     # Save to Database
     new_poi = models.PersonOfInterest(
@@ -722,6 +731,14 @@ async def import_persons_of_interest(
             embed_model = get_poi_embedding_model()
             details_embedding = embed_model.embed_query(details_str)
             
+            # Generate photo embedding
+            photograph_embedding = None
+            try:
+                from photo_embedding import generate_photo_embedding
+                photograph_embedding = generate_photo_embedding(poi_in.photograph_base64)
+            except Exception as photo_err:
+                print(f"⚠️ Photo embedding error for {poi_in.name}: {photo_err}")
+            
             # Create POI
             new_poi = models.PersonOfInterest(
                 name=poi_in.name,
@@ -729,7 +746,7 @@ async def import_persons_of_interest(
                 photograph_base64=poi_in.photograph_base64,
                 details=poi_in.details,
                 details_embedding=details_embedding,
-                photograph_embedding=None  # TODO: implement face recognition
+                photograph_embedding=photograph_embedding
             )
             
             db.add(new_poi)

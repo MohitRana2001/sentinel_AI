@@ -1,0 +1,25 @@
+# CDR Processing Dependencies
+# Database
+sqlalchemy
+psycopg2-binary
+pgvector
+
+# Redis
+redis==5.2.1
+hiredis==3.0.0
+
+# Storage
+google-cloud-storage==2.19.0
+google-auth==2.37.0
+
+# Config
+pydantic
+pydantic-settings
+python-dotenv
+
+# Utils
+python-dateutil
+
+# Data processing
+pandas
+openpyxl  # For Excel files

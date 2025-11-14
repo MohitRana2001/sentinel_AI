@@ -1,0 +1,48 @@
+# Audio Processing Dependencies
+torch>=2.0.0
+soundfile
+numpy
+dl-translate==0.3.0
+langid
+indic-nlp-library==0.92
+
+# Text Processing
+langchain-text-splitters==0.3.11
+langchain-core
+
+# LLM Client
+ollama
+
+# Database
+sqlalchemy
+psycopg2-binary
+pgvector
+
+# Redis
+redis==5.2.1
+hiredis==3.0.0
+
+# Storage
+google-cloud-storage==2.19.0
+google-auth==2.37.0
+
+# Config
+pydantic
+pydantic-settings
+python-dotenv
+
+# Utils
+python-dateutil
+
+ffmpeg
+
+# NeMo ASR (installed separately as per AI4Bharat setup)
+# nemo_toolkit[asr]
+# This should be installed separately following AI4Bharat documentation
+
+# FFmpeg wrapper (requires ffmpeg binary installed on system)
+# Install ffmpeg: apt-get install ffmpeg
+
+# Vosk (for English transcription)
+# vosk
+# This should be installed separately

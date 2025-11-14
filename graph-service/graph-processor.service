@@ -1,0 +1,45 @@
+[Unit]
+Description=Graph Processor Service - Sentinel AI
+After=network.target redis.target postgresql.target neo4j.target
+Wants=redis.target postgresql.target neo4j.target
+
+[Service]
+Type=simple
+User=sentinelai
+Group=sentinelai
+WorkingDirectory=/opt/sentinel-ai/graph-service
+Environment="PATH=/opt/sentinel-ai/graph-service/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/opt/sentinel-ai:/opt/sentinel-ai/graph-service"
+
+# Load environment variables from .env file
+EnvironmentFile=/opt/sentinel-ai/.env
+
+ExecStart=/opt/sentinel-ai/graph-service/venv/bin/python graph_processor_service.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitBurst=5
+StartLimitInterval=100
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=graph-processor
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/sentinel-ai/graph-service /tmp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Resource limits
+MemoryMax=4G
+CPUQuota=150%
+
+[Install]
+WantedBy=multi-user.target

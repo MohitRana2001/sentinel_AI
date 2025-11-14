@@ -1,0 +1,45 @@
+[Unit]
+Description=CDR Processor Service - Sentinel AI
+After=network.target redis.target postgresql.target
+Wants=redis.target postgresql.target
+
+[Service]
+Type=simple
+User=sentinelai
+Group=sentinelai
+WorkingDirectory=/opt/sentinel-ai/cdr-service
+Environment="PATH=/opt/sentinel-ai/cdr-service/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/opt/sentinel-ai:/opt/sentinel-ai/cdr-service"
+
+# Load environment variables from .env file
+EnvironmentFile=/opt/sentinel-ai/.env
+
+ExecStart=/opt/sentinel-ai/cdr-service/venv/bin/python cdr_processor_service.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitBurst=5
+StartLimitInterval=100
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cdr-processor
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/sentinel-ai/cdr-service /tmp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Resource limits
+MemoryMax=2G
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target

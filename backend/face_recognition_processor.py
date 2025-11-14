@@ -57,13 +57,30 @@ class FaceRecognitionProcessor:
                 # Decode base64 photograph
                 photo_data = poi.photograph_base64
                 
+                # Skip if no photo
+                if not photo_data or not photo_data.strip():
+                    print(f"  ⚠️ No photograph for: {poi.name}")
+                    continue
+                
                 # Handle data URL format (e.g., "data:image/jpeg;base64,...")
                 if photo_data.startswith('data:image'):
                     photo_data = photo_data.split(',', 1)[1]
                 
                 # Decode base64 to bytes
-                image_bytes = base64.b64decode(photo_data)
-                image = Image.open(io.BytesIO(image_bytes))
+                try:
+                    image_bytes = base64.b64decode(photo_data)
+                except Exception as decode_err:
+                    print(f"  ❌ Base64 decode error for {poi.name}: {decode_err}")
+                    continue
+                
+                # Open image
+                try:
+                    image = Image.open(io.BytesIO(image_bytes))
+                except Exception as img_err:
+                    print(f"  ❌ Image open error for {poi.name}: {img_err}")
+                    print(f"     Image bytes length: {len(image_bytes)}")
+                    print(f"     First 20 bytes: {image_bytes[:20]}")
+                    continue
                 
                 # Convert to RGB numpy array (required by face_recognition)
                 image_np = np.array(image.convert('RGB'))

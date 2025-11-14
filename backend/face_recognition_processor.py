@@ -268,29 +268,76 @@ class FaceRecognitionProcessor:
             db: Database session
             document_id: Video document ID
             detections: List of POI detections from process_video_for_faces
+                       Each detection has: poi_id, frame_number, timestamp, face_location, confidence
         """
         if not detections:
             print("No detections to save")
             return
         
-        print(f"Creating {len(detections)} VideoPOIDetection records...")
+        # Get job_id from document
+        document = db.query(models.Document).filter(
+            models.Document.id == document_id
+        ).first()
         
+        if not document:
+            print(f"Document {document_id} not found")
+            return
+        
+        job_id = document.job_id
+        
+        # Group detections by POI
+        poi_detections = {}
         for detection in detections:
+            poi_id = detection['poi_id']
+            if poi_id not in poi_detections:
+                poi_detections[poi_id] = {
+                    'frames': [],
+                    'confidence_scores': [],
+                    'timestamps': [],
+                    'face_locations': []
+                }
+            
+            poi_detections[poi_id]['frames'].append(detection['frame_number'])
+            poi_detections[poi_id]['confidence_scores'].append(detection.get('confidence', 0.95))
+            poi_detections[poi_id]['timestamps'].append(detection.get('timestamp', 0))
+            poi_detections[poi_id]['face_locations'].append(detection.get('face_location', []))
+        
+        print(f"Unique POIs detected: {len(poi_detections)}")
+        for poi_id, data in poi_detections.items():
+            poi = db.query(models.PersonOfInterest).filter(
+                models.PersonOfInterest.id == poi_id
+            ).first()
+            print(f"   - {poi.name if poi else 'Unknown'}: {len(data['frames'])} appearance(s)")
+        
+        print(f"Creating {len(poi_detections)} VideoPOIDetection records...")
+        
+        # Create one record per POI with all frames
+        for poi_id, data in poi_detections.items():
+            # Convert frames list to comma-separated string
+            frames_str = ','.join(map(str, data['frames']))
+            
             video_poi = models.VideoPOIDetection(
                 document_id=document_id,
-                poi_id=detection['poi_id'],
-                frame_number=detection['frame_number'],
-                timestamp=detection['timestamp'],
-                face_location=detection['face_location'],
-                confidence_score=detection.get('confidence', 0.95)
+                poi_id=poi_id,
+                job_id=job_id,
+                frames=frames_str,
+                confidence_scores={
+                    'scores': data['confidence_scores'],
+                    'avg': sum(data['confidence_scores']) / len(data['confidence_scores'])
+                },
+                detection_metadata={
+                    'timestamps': data['timestamps'],
+                    'face_locations': data['face_locations'],
+                    'total_detections': len(data['frames'])
+                }
             )
             db.add(video_poi)
         
         try:
             db.commit()
-            print(f"Successfully created {len(detections)} VideoPOIDetection records")
+            print(f"✅ Successfully created {len(poi_detections)} VideoPOIDetection record(s)")
         except Exception as e:
-            print(f"Error saving detections: {e}")
+            print(f"❌ Error saving detections: {e}")
             db.rollback()
             raise
     

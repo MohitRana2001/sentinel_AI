@@ -1034,28 +1034,32 @@ async def upload_documents(
     db.commit()
     db.refresh(job)
     
-    # Save suspects to database
+    # Save Persons of Interest (POIs) to database
+    # POIs are now stored instead of suspects for better face recognition integration
     if suspects_data:
-        for suspect_data in suspects_data:
-            suspect = models.Suspect(
-                id=suspect_data.get('id', str(uuid.uuid4())),
-                job_id=job_id
-            )
-            db.add(suspect)
-            db.flush()  # Get the suspect ID before adding fields
+        print(f"📋 Processing {len(suspects_data)} POIs for job {job_id}")
+        for idx, poi_data in enumerate(suspects_data):
+            print(f"  POI {idx + 1}: {poi_data.get('name', 'NO NAME')} - {poi_data.get('phone_number', 'NO PHONE')}")
             
-            # Add suspect fields
-            for field_data in suspect_data.get('fields', []):
-                suspect_field = models.SuspectField(
-                    id=field_data.get('id', str(uuid.uuid4())),
-                    suspect_id=suspect.id,
-                    key=field_data.get('key', ''),
-                    value=field_data.get('value', '')
-                )
-                db.add(suspect_field)
+            # Validate required fields
+            if not poi_data.get('name') or not poi_data.get('phone_number') or not poi_data.get('photograph_base64'):
+                print(f"  ⚠️ Skipping invalid POI at index {idx}: missing required fields")
+                continue
+            
+            # Create POI record - now with job_id association
+            poi = models.PersonOfInterest(
+                job_id=job_id,
+                name=poi_data.get('name', ''),
+                phone_number=poi_data.get('phone_number', ''),
+                photograph_base64=poi_data.get('photograph_base64', ''),
+                details=poi_data.get('details', {})
+            )
+            db.add(poi)
         
         db.commit()
-        print(f"Saved {len(suspects_data)} suspects for job {job_id}")
+        print(f"✅ Saved POIs for job {job_id}")
+    else:
+        print(f"ℹ️ No POIs provided for job {job_id}")
     
     # Push per-file messages to Redis queues for true parallel processing
     # Each file gets its own message in a queue, distributed to available workers
@@ -1088,8 +1092,8 @@ async def upload_documents(
         "job_id": job_id,
         "status": "queued",
         "total_files": len(files),
-        "suspects_count": len(suspects_data),
-        "message": f"Successfully uploaded {len(files)} files and {len(suspects_data)} suspects. Processing started."
+        "pois_count": len(suspects_data),
+        "message": f"Successfully uploaded {len(files)} files and {len(suspects_data)} POI(s). Processing started."
     }
 
 @app.get(f"{settings.API_PREFIX}/cases")

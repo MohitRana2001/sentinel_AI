@@ -405,10 +405,11 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
             try:
                 from face_recognition_processor import face_recognition_processor
                 
-                # Load POI faces
-                poi_encodings, poi_metadata = face_recognition_processor.load_poi_faces(db)
+                # Load POI faces for THIS JOB ONLY
+                poi_encodings, poi_metadata = face_recognition_processor.load_poi_faces(db, job_id=job.id)
                 
                 if poi_encodings:
+                    print(f"✅ Loaded {len(poi_encodings)} POI face encoding(s) for job {job.id}")
                     # Process video for face detections
                     detections = face_recognition_processor.process_video_for_faces(
                         temp_video_file,
@@ -423,6 +424,7 @@ Provide a comprehensive analysis that a law enforcement officer would find usefu
                     else:
                         print(f"No POI matches found in video")
                 else:
+                    print(f"⚠️ No POIs found for job {job.id} - skipping face recognition")
                     print(f"No POIs in database, skipping face recognition")
                     
             except Exception as e:

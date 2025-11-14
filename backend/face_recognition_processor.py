@@ -28,25 +28,33 @@ class FaceRecognitionProcessor:
         self.frame_skip_seconds = 0.3  # Process 1 frame every 0.3 seconds
         print(f"FaceRecognitionProcessor initialized (tolerance={self.tolerance})")
     
-    def load_poi_faces(self, db) -> Tuple[List[np.ndarray], List[Dict]]:
+    def load_poi_faces(self, db, job_id: str = None) -> Tuple[List[np.ndarray], List[Dict]]:
         """
-        Load all POI face encodings from database
+        Load POI face encodings from database
         
         Args:
             db: Database session
+            job_id: Optional job ID to filter POIs (only load POIs for this job)
         
         Returns:
             Tuple of (face_encodings, poi_metadata)
             - face_encodings: List of numpy arrays representing face embeddings
             - poi_metadata: List of POI info dicts aligned with encodings
         """
-        print("Loading POI face encodings from database...")
-        
-        pois = db.query(models.PersonOfInterest).all()
+        if job_id:
+            print(f"Loading POI face encodings for job {job_id}...")
+            pois = db.query(models.PersonOfInterest).filter(
+                models.PersonOfInterest.job_id == job_id
+            ).all()
+        else:
+            print("Loading ALL POI face encodings from database...")
+            pois = db.query(models.PersonOfInterest).all()
 
         if not pois:
-            print("No POIs found in database")
+            print(f"No POIs found" + (f" for job {job_id}" if job_id else ""))
             return [], []
+        
+        print(f"Found {len(pois)} POI(s)" + (f" for job {job_id}" if job_id else ""))
         
         face_encodings = []
         poi_metadata = []

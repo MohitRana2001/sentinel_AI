@@ -317,7 +317,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Add suspects data as JSON
     if (job.suspects.length > 0) {
+      console.log('📤 Uploading POIs:', job.suspects.length);
+      job.suspects.forEach((suspect, idx) => {
+        console.log(`  POI ${idx + 1}:`, {
+          name: suspect.name,
+          phone: suspect.phone_number,
+          hasPhoto: !!suspect.photograph_base64,
+          photoLength: suspect.photograph_base64?.length || 0,
+          details: suspect.details
+        });
+      });
       formData.append('suspects', JSON.stringify(job.suspects));
+    } else {
+      console.log('ℹ️ No POIs to upload');
     }
     
     // Add case name if provided

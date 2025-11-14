@@ -736,6 +736,34 @@ class ApiClient {
 
     return response.json()
   }
+
+  // POI namespace for organized access
+  poi = {
+    create: async (poi: PersonOfInterestCreate): Promise<{ id: number; name: string; message: string }> => {
+      return this.createPOI(poi)
+    },
+    getAll: async (skip: number = 0, limit: number = 100): Promise<PersonOfInterest[]> => {
+      const response = await this.getPOIs(skip, limit)
+      return response.persons
+    },
+    getById: async (poiId: number): Promise<PersonOfInterest> => {
+      return this.getPOI(poiId)
+    },
+    update: async (poiId: number, updates: PersonOfInterestUpdate): Promise<{ id: number; name: string; message: string }> => {
+      return this.updatePOI(poiId, updates)
+    },
+    delete: async (poiId: number): Promise<{ message: string }> => {
+      return this.deletePOI(poiId)
+    },
+    importBulk: async (persons: PersonOfInterestCreate[]): Promise<{
+      success: number
+      created: string[]
+      errors: string[]
+      message: string
+    }> => {
+      return this.importPOIs({ persons })
+    }
+  }
 }
 
 // Export singleton instance
